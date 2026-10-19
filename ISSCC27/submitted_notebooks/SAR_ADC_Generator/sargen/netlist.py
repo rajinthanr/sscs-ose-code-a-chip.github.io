@@ -14,7 +14,7 @@ bo_<i>       analog copy of output bit i, for read-out
 
 from dataclasses import dataclass
 
-from .pdk import MIM, NFET, PFET, STDCELL_SPICE, lib_line, mim, mos
+from .pdk import MIM, NFET, PFET, STDCELL_SPICE, TG_FLAVORS, lib_line, mim, mos
 
 TR = 50e-12  # edge time of ideal timing sources
 
@@ -46,9 +46,10 @@ def strongarm_subckt(c: dict) -> str:
     return "\n".join(lines)
 
 
-def tg_lines(name, a, b, en, enb, wn, wp, l, m=1) -> list[str]:
-    return [mos(f"{name}n", a, en, b, "0", NFET, wn, l, m),
-            mos(f"{name}p", a, enb, b, "vdd", PFET, wp, l, m)]
+def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
+    nm, ln, pm, lp = TG_FLAVORS[flavor]
+    return [mos(f"{name}n", a, en, b, "0", nm, wn, ln, m),
+            mos(f"{name}p", a, enb, b, "vdd", pm, wp, lp, m)]
 
 
 # ---------------------------------------------------------------- SAR core
@@ -57,18 +58,19 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
     cu, sw, drv, L = design["cu"], design["sw"], design["drv"], design["l_sw"]
     out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm",
            "* ---- top-plate sampling switch (to vcm)"]
-    out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], L)
+    fl = sw.get("flavor", "std")
+    out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], fl)
     for i in range(bits):
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
         for u in range(m):
             out.append(mim(f"C{i}_{u}", "top", f"bot_{i}", cu["side"], cu["side"]))
-        out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], L, m)
+        out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], fl, m)
         out.append(mos(f"Mdp{i}", f"bot_{i}", f"pg_{i}", "vref", "vdd", PFET, drv["wp"], L, m))
         out.append(mos(f"Mdn{i}", f"bot_{i}", f"ng_{i}", "0", "0", NFET, drv["wn"], L, m))
     out.append("* ---- dummy (termination) unit cap: samples vin, then grounded")
     out.append(mim("Cd", "top", "botd", cu["side"], cu["side"]))
-    out += tg_lines("Msd", "botd", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], L)
+    out += tg_lines("Msd", "botd", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], fl)
     out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
     if cp_top > 0:
         out.append(f"Cptop top 0 {cp_top:.4g}")

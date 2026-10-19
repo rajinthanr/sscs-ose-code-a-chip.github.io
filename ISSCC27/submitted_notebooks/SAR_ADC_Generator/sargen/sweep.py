@@ -169,3 +169,47 @@ quit
     plt.close(fig)
     return dict(dv=dv.tolist(), delay=delays.tolist(), tau=float(tau),
                 delay_half_lsb=float(np.interp(np.log(spec.lsb / 2), np.log(dv), delays)))
+
+
+def spice_mc(spec, design, out, seeds=4, hits=8, behavioral_runs=1000, sigma_os=None):
+    """Transistor-level ramps with SKY130 mismatch (tt_mm) vs. the PDK-calibrated behavioral MC."""
+    from .model import SarModel
+    out = Path(out)
+    n_ramp = hits * 2**spec.bits
+    v0, v1 = -0.5 * spec.lsb, spec.vref + 0.5 * spec.lsb
+    rows = []
+    for s in range(seeds):
+        c, v, _ = simulate_codes(spec, design, "ramp", n_ramp, out / "sim" / f"mc_seed{s}", 32,
+                                 ramp=(v0, (v1 - v0) / n_ramp), mismatch=True, seed=1000 + s)
+        tr = metrics.transition_inl_dnl(metrics.transition_levels(v, c, spec.bits), spec.vref, spec.bits)
+        rows.append(dict(label=f"seed {1000 + s}", dnl=tr["dnl_max"], inl=tr["inl_max"], offset=tr["offset_lsb"]))
+        print(f"  SPICE MC seed {1000 + s}: DNL {tr['dnl_max']:.3f}, INL {tr['inl_max']:.3f}, "
+              f"offset {tr['offset_lsb']:.2f} LSB", flush=True)
+    # behavioral distribution evaluated with the same ramp resolution as the SPICE runs
+    rng = np.random.default_rng(7)
+    sig_os = sigma_os if sigma_os is not None else design["cmp"]["sigma_os_est"]
+    vin = v0 + (v1 - v0) * np.arange(n_ramp) / n_ramp
+    beh = []
+    for k in range(behavioral_runs):
+        m = SarModel(spec.bits, spec.vref, cu_sigma=design["cu"]["sigma_u"], offset=rng.normal(0, sig_os), seed=k)
+        tr = metrics.transition_inl_dnl(metrics.transition_levels(vin, m.convert(vin), spec.bits), spec.vref, spec.bits)
+        beh.append((tr["dnl_max"], tr["inl_max"]))
+    beh = np.array(beh)
+    res = dict(spice=rows, beh_dnl_pct=np.percentile(beh[:, 0], [5, 50, 95]).tolist(),
+               beh_inl_pct=np.percentile(beh[:, 1], [5, 50, 95]).tolist(), hits=hits)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+    for a, j, name in ((ax[0], 0, "DNL"), (ax[1], 1, "INL")):
+        a.hist(beh[:, j], bins=30, color="#cccccc", label=f"behavioral MC ({behavioral_runs})")
+        for r in rows:
+            a.axvline(r[name.lower()], color="#C62828", lw=2)
+        a.axvline(np.nan, color="#C62828", lw=2, label=f"transistor-level MC ({seeds} seeds)")
+        a.set_xlabel(f"max |{name}| [LSB]")
+        a.legend(fontsize=8)
+        a.grid(alpha=0.3)
+    fig.suptitle(f"{spec.bits}-bit: transistor-level mismatch runs vs. behavioral model "
+                 f"(ramp resolution 1/{hits} LSB)")
+    fig.tight_layout()
+    fig.savefig(out / f"spice_mc_{spec.bits}b.png", dpi=130)
+    plt.close(fig)
+    (out / f"spice_mc_{spec.bits}b.json").write_text(json.dumps(res, indent=1, default=float))
+    return res

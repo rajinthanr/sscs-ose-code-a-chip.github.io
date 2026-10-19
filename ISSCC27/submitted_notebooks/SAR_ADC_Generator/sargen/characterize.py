@@ -13,10 +13,12 @@ from pathlib import Path
 import numpy as np
 
 from . import netlist as nl
-from .pdk import NFET, PFET, lib_line, mim, mim_matching_pct_um, mos
+from .pdk import NFET, PFET, TG_FLAVORS, lib_line, mim, mim_matching_pct_um, mos
 from .spice import read_print, read_wrdata, run, run_many
 
 AVT_GEOMS = [(2.0, 0.5), (4.0, 1.0)]   # (W, L) in um
+# switches are sized for the worst on-resistance over these (corner, temp, vdd scale) conditions
+RON_WORST_CASES = [("ss", -40.0, 1.0), ("ss", 125.0, 1.0), ("tt", 27.0, 0.9)]
 N_MC = 200                              # instances per geometry
 
 
@@ -35,19 +37,21 @@ def _avt_netlist(corner, temp, vdd):
 
 
 def _ron_netlist(corner, temp, vdd):
-    """Small-signal on-resistance vs. signal level for W = 1 um devices."""
+    """Small-signal on-resistance vs. signal level for Wn = 1 um devices (TG: Wp = 2 Wn)."""
     L = 0.15
+    tgs = []
+    for fl, (nm, ln, pm, lp) in TG_FLAVORS.items():
+        tgs += [f"Vt_{fl} b_{fl} a 0.005", mos(f"Tn_{fl}", "a", "vdd", f"b_{fl}", "0", nm, 1, ln),
+                mos(f"Tp_{fl}", "a", "0", f"b_{fl}", "vdd", pm, 2, lp)]
     return "\n".join([
         "* switch on-resistance", lib_line(corner), f".temp {temp}",
-        f"Vdd vdd 0 {vdd}", "Vin a 0 0",
-        # transmission gate Wn = 1, Wp = 2
-        "Vt b a 0.005", mos("Tn", "a", "vdd", "b", "0", NFET, 1, L),
-        mos("Tp", "a", "0", "b", "vdd", PFET, 2, L),
+        f"Vdd vdd 0 {vdd}", "Vin a 0 0", *tgs,
         # NMOS driver (gate = vdd) and PMOS driver (gate = 0), source tied to rail
         "Vn bn 0 0.005", mos("Dn", "bn", "vdd", "0", "0", NFET, 1, L),
         "Vp bp vdd -0.005", mos("Dp", "bp", "0", "vdd", "vdd", PFET, 1, L),
         ".control", f"dc Vin 0 {vdd} 0.01", "set wr_singlescale", "set wr_vecnames",
-        "wrdata ron.txt i(Vt) i(Vn) i(Vp)", "quit", ".endc", ".end"])
+        "wrdata ron.txt " + " ".join(f"i(Vt_{fl})" for fl in TG_FLAVORS) + " i(Vn) i(Vp)",
+        "quit", ".endc", ".end"])
 
 
 def _mim_netlist(corner, temp):
@@ -67,14 +71,18 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
     workdir = Path(workdir)
     cache = workdir / f"pdk_char_{spec.corner}_{spec.temp:g}C_{spec.vdd:g}V.json"
     if cache.exists() and not force:
-        return json.loads(cache.read_text())
+        cached = json.loads(cache.read_text())
+        if isinstance(cached.get("ron_tg_worst_ohm_um"), dict):
+            return cached
 
     mim_txt, sides = _mim_netlist(spec.corner, spec.temp)
-    d_avt, d_ron, d_mim = run_many([
+    worst_jobs = [dict(netlist=_ron_netlist(c, t, spec.vdd * k), workdir=workdir / f"ron_{c}_{t:g}C_{k:g}")
+                  for c, t, k in RON_WORST_CASES]
+    d_avt, d_ron, d_mim, *d_worst = run_many([
         dict(netlist=_avt_netlist(spec.corner, spec.temp, spec.vdd), workdir=workdir / "avt", seed=1),
         dict(netlist=_ron_netlist(spec.corner, spec.temp, spec.vdd), workdir=workdir / "ron"),
         dict(netlist=mim_txt, workdir=workdir / "mim"),
-    ])
+    ] + worst_jobs)
 
     # --- A_VT: sigma(dVT) of a pair = sqrt(2) * sigma(single); A_VT = sigma(dVT) * sqrt(WL)
     op = read_print(d_avt / "op.txt")
@@ -88,9 +96,24 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
     # --- on-resistance (worst case over the signal range for the TG)
     r = read_wrdata(d_ron / "ron.txt")
     vin = r[list(r)[0]]
-    r_tg = 0.005 / np.abs(r["i(vt)"])
+    r_tg = 0.005 / np.abs(r["i(vt_std)"])
     r_n = 0.005 / np.abs(r["i(vn)"][0])
     r_p = 0.005 / np.abs(r["i(vp)"][0])
+
+    # --- worst-case on-resistance over corners / temperature / low supply
+    worst = dict(n=r_n, p=r_p, where=dict(n="nominal", p="nominal"))
+    for fl in TG_FLAVORS:
+        worst[f"tg_{fl}"] = float((0.005 / np.abs(r[f"i(vt_{fl})"])).max())
+        worst["where"][f"tg_{fl}"] = "nominal"
+    for (c_, t_, k_), d in zip(RON_WORST_CASES, d_worst):
+        rw = read_wrdata(d / "ron.txt")
+        vin_w = rw[list(rw)[0]]
+        vals = {f"tg_{fl}": (0.005 / np.abs(rw[f"i(vt_{fl})"]))[vin_w <= spec.vref * k_].max()
+                for fl in TG_FLAVORS}
+        vals.update(n=0.005 / abs(rw["i(vn)"][0]), p=0.005 / abs(rw["i(vp)"][0]))
+        for key, v in vals.items():
+            if v > worst[key]:
+                worst[key], worst["where"][key] = float(v), f"{c_} {t_:g}C {spec.vdd * k_:.2f}V"
 
     # --- MIM: C = ca*W*L + cp*2(W+L), least squares over the three geometries
     c = read_print(d_mim / "mim.txt")
@@ -104,6 +127,9 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
         avt_geoms=AVT_GEOMS, avt_n_each=avt["nfet"], avt_p_each=avt["pfet"],
         ron_tg_ohm_um=float(r_tg.max()), ron_tg_vin=vin.tolist(), ron_tg_curve=(r_tg).tolist(),
         ron_n_ohm_um=float(r_n), ron_p_ohm_um=float(r_p),
+        ron_tg_worst_ohm_um={fl: float(worst[f"tg_{fl}"]) for fl in TG_FLAVORS},
+        ron_n_worst_ohm_um=float(worst["n"]),
+        ron_p_worst_ohm_um=float(worst["p"]), ron_worst_where=worst["where"],
         mim_ca_fF_um2=float(ca * 1e15), mim_cp_fF_um=float(cperim * 1e15),
         mim_match_pct_um=mim_matching_pct_um(),
     )

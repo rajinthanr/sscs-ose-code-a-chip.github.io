@@ -11,7 +11,7 @@ from sargen import sweep
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["pvt", "fin", "fs", "delay", "all"])
+    ap.add_argument("what", choices=["pvt", "fin", "fs", "delay", "mc", "all"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--fs", type=float, default=10e6)
     ap.add_argument("--hits", type=int, default=16)
@@ -33,6 +33,12 @@ def main():
         sweep.fs_sweep(spec, design, out, **kw)
     if a.what in ("pvt", "all"):
         sweep.pvt(spec, design, out, **kw)
+    if a.what == "mc":
+        s_os = None
+        summ = base / "summary.json"
+        if summ.exists():
+            s_os = json.loads(summ.read_text())["comparator_offset"]["sigma"]
+        sweep.spice_mc(spec, design, out, seeds=4, hits=8, sigma_os=s_os)
 
 
 if __name__ == "__main__":

@@ -80,29 +80,35 @@ def size_sar(spec, char: dict) -> dict:
     # the shared top-plate switch carries the charge of the whole array, so it gets 3/4 of the budget
     r_unit = tau_s / 4 / cu
     r_top = 3 * tau_s / 4 / c_tot
-    rw_tg = char["ron_tg_ohm_um"]
+    # transmission-gate flavour with the lowest worst-case (corner / temperature / supply) R_on * W
+    worst = char["ron_tg_worst_ohm_um"]
+    flavor = min(worst, key=worst.get)
+    rw_tg = worst[flavor]
+    log.add("sampling", "TG device flavour = lowest worst-case R_on W (ss/-40C, ss/125C, tt/-10% supply)",
+            ", ".join(f"{k}: {v / 1e3:.1f} kOhm um" for k, v in worst.items()), f"{flavor} transistors")
     in_wn = _ceil(max(rw_tg / r_unit, W_MIN))
     top_wn = _ceil(max(rw_tg / r_top, W_MIN))
     log.add("sampling", "tau = T_track / ln(2^N / settle_lsb); 1/4 bit switch, 3/4 top switch",
             f"T_track = {t_track * 1e9:.2f} ns, tau <= {tau_s * 1e12:.0f} ps",
             f"R_unit <= {r_unit / 1e3:.1f} kOhm, R_top <= {r_top:.0f} Ohm")
     log.add("sampling", "W_n = (R_on W)_TG,worst / R  (Wp = 2 Wn), bit-i switch = 2^i units",
-            f"(R_on W) = {rw_tg / 1e3:.2f} kOhm um", f"unit TG {in_wn:.2f}/{2 * in_wn:.2f} um, "
+            f"worst (R_on W) = {rw_tg / 1e3:.2f} kOhm um ({char['ron_worst_where'].get('tg_' + flavor, 'tt')})",
+            f"unit TG {in_wn:.2f}/{2 * in_wn:.2f} um, "
             f"top TG {top_wn:.2f}/{2 * top_wn:.2f} um")
 
     # ---------------------------------------------------------------- DAC drivers
     t_dac = 0.45 * T                          # DAC must settle before the comparator clock
     tau_d = t_dac / ln_settle
     r_drv = tau_d / cu / 2                    # driver + top-plate redistribution, 2x margin
-    drv = dict(wn=_ceil(max(char["ron_n_ohm_um"] / r_drv, W_MIN)),
-               wp=_ceil(max(char["ron_p_ohm_um"] / r_drv, W_MIN)))
+    drv = dict(wn=_ceil(max(char.get("ron_n_worst_ohm_um", char["ron_n_ohm_um"]) / r_drv, W_MIN)),
+               wp=_ceil(max(char.get("ron_p_worst_ohm_um", char["ron_p_ohm_um"]) / r_drv, W_MIN)))
     log.add("DAC driver", "tau = 0.45 Tclk / ln(2^N / settle_lsb), per unit cap (binary scaled)",
             f"tau <= {tau_d * 1e12:.0f} ps, R_unit <= {r_drv / 1e3:.1f} kOhm",
             f"unit NMOS {drv['wn']:.2f} um, unit PMOS {drv['wp']:.2f} um")
 
     design = dict(
         bits=N, cu=dict(side=side, c=cu, c_total=c_tot, sigma_u=a_c / side),
-        cmp=cmp_, sw=dict(in_wn=in_wn, in_wp=2 * in_wn, top_wn=top_wn, top_wp=2 * top_wn),
+        cmp=cmp_, sw=dict(in_wn=in_wn, in_wp=2 * in_wn, top_wn=top_wn, top_wp=2 * top_wn, flavor=flavor),
         drv=drv, l_sw=L_MIN,
         timing=dict(tclk=T, t_track=t_track, t_dac=t_dac),
         noise=dict(ktc_rms=math.sqrt(kT / c_tot)),
