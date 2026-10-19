@@ -127,3 +127,23 @@ def mc_linearity(dnl_max, inl_max, spec, path):
         a.grid(alpha=0.3)
     fig.suptitle(f"{spec.bits}-bit, {len(dnl_max)} mismatch samples (behavioral model with PDK sigma)")
     return _save(fig, path)
+
+
+def transition_inl_dnl(tr, spec, path):
+    """INL/DNL from measured code-transition voltages; also shows absolute INL (offset + gain)."""
+    k = np.arange(1, 2**spec.bits)
+    inl = np.asarray(tr["inl"])
+    inl_ep = inl - np.linspace(inl[0], inl[-1], len(inl))
+    fig, ax = plt.subplots(2, 1, figsize=(8, 5.5), sharex=True)
+    ax[0].bar(k[:-1] + 0.5, tr["dnl"], color="#E8744C")
+    ax[0].set_ylabel("DNL [LSB]")
+    ax[0].set_title(f"Transition-level DNL (max |DNL| = {tr['dnl_max']:.3f} LSB)")
+    ax[1].plot(k, inl_ep, "o-", color="#2E7D32", label="end-point fit")
+    ax[1].plot(k, inl, ".--", color="grey", alpha=0.7, label="absolute (incl. offset/gain)")
+    ax[1].set_ylabel("INL [LSB]")
+    ax[1].set_xlabel("code transition k")
+    ax[1].set_title(f"Transition-level INL (max |INL| = {tr['inl_max']:.3f} LSB, end-point)")
+    ax[1].legend(fontsize=8)
+    for a in ax:
+        a.grid(alpha=0.3)
+    return _save(fig, path)

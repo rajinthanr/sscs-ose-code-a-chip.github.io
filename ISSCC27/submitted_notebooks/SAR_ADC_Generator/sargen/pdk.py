@@ -1,5 +1,6 @@
 """SKY130 PDK access: model library, device cards and PDK-derived constants."""
 
+import math
 import os
 import re
 from pathlib import Path
@@ -15,7 +16,8 @@ MIM = "sky130_fd_pr__cap_mim_m3_1"
 
 L_MIN = 0.15          # um, 1.8 V devices
 W_MIN = 0.42          # um
-MIM_MIN_SIDE = 2.0    # um, practical lower bound chosen for matching/layout (rule minimum is smaller)
+MIM_MIN_SIDE = 2.0    # um, 2x the DRC minimum (capm.1 = 1.0 um) for matching and via3 contacts
+STDCELL_SPICE = PDK_ROOT / PDK / "libs.ref/sky130_fd_sc_hd/spice/sky130_fd_sc_hd.spice"
 DIFF_EXT = 0.29       # um, source/drain extension used for AD/AS/PD/PS estimates
 
 
@@ -36,8 +38,13 @@ def mim_matching_pct_um() -> float:
     return 2.8
 
 
+W_FINGER_MAX = 10.0   # um; wider devices are split into parallel units (models are binned to 100 um)
+
+
 def mos(name, d, g, s, b, model, w, l, m=1) -> str:
-    """One MOSFET card with diffusion geometry filled in (single finger)."""
+    """One MOSFET card with diffusion geometry filled in; wide devices become m parallel units."""
+    k = math.ceil(w / W_FINGER_MAX - 1e-9)
+    w, m = w / k, m * k
     ad = w * DIFF_EXT
     pd = 2 * (w + DIFF_EXT)
     return (f"X{name} {d} {g} {s} {b} {model} L={l:.3g} W={w:.4g} nf=1 "

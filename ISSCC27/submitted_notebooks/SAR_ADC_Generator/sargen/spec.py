@@ -20,8 +20,8 @@ class SarSpec:
     corner: str = "tt"            # process corner of the SKY130 models
 
     # Design targets, all in LSB. The sizing step turns these into device sizes.
-    dnl_3sigma_lsb: float = 0.25      # 3-sigma DNL from capacitor mismatch
-    offset_3sigma_lsb: float = 0.5    # 3-sigma comparator offset
+    dnl_3sigma_lsb: float = 0.5       # 3-sigma mid-code DNL from capacitor mismatch
+    offset_3sigma_lsb: float = 1.0    # 3-sigma comparator offset; it only causes offset error here
     noise_lsb: float = 0.1            # rms comparator + kT/C noise
     settle_lsb: float = 0.25          # settling error allowed at end of each phase
 

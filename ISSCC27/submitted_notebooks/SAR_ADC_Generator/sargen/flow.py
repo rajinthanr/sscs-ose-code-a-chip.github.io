@@ -114,7 +114,9 @@ def run_flow(spec, out=None, *, hits=32, fft_n=128, fft_cycles=None, cmp_mc_inst
     trans = metrics.transition_inl_dnl(metrics.transition_levels(vin_r, codes_r, spec.bits), spec.vref, spec.bits)
     plots.transfer(vin_r, codes_r, spec, out / "transfer.png")
     plots.inl_dnl(hist, spec, out / "inl_dnl_histogram.png")
+    plots.transition_inl_dnl(trans, spec, out / "inl_dnl_transitions.png")
     res["static"] = dict(dnl_max=hist["dnl_max"], inl_max=hist["inl_max"], missing_codes=hist["missing_codes"],
+                         dnl_t_max=trans["dnl_max"], inl_t_max=trans["inl_max"],
                          offset_lsb=trans["offset_lsb"], gain_error_lsb=trans["gain_error_lsb"],
                          dnl=hist["dnl"].tolist(), inl=hist["inl"].tolist(), hist=hist["hist"].tolist(),
                          transitions=trans["t"].tolist())
@@ -134,7 +136,8 @@ def run_flow(spec, out=None, *, hits=32, fft_n=128, fft_cycles=None, cmp_mc_inst
                           enob=fft["enob"], ideal_model_sndr_db=ideal_fft["sndr_db"], ideal_model_enob=ideal_fft["enob"])
     res["power"] = dict(**power_s, energy_per_conv=p_avg / spec.fs,
                         walden_fom_J=metrics.walden_fom(p_avg, fft["enob"], spec.fs),
-                        note="SAR logic is ideal XSPICE (no power); includes comparator, CDAC, switches")
+                        note="comparator, CDAC, switches and SAR logic (sky130_fd_sc_hd cells); "
+                             "clock/phase generation and references are ideal sources")
     np.savez(out / "sine.npz", vin=vin_s, codes=codes_s)
 
     step(f"7/8 mismatch Monte Carlo: behavioral model x {mc_runs} (+{spice_mc_seeds} SPICE seeds)")
@@ -194,10 +197,11 @@ def report_md(res, design) -> str:
 | ENOB (FFT, {dy['f_in'] / 1e6:.3f} MHz) | **{dy['enob']:.2f} bit** (ideal quantizer: {dy['ideal_model_enob']:.2f}) |
 | SNDR / SFDR / THD | {dy['sndr_db']:.2f} dB / {dy['sfdr_db']:.1f} dB / {dy['thd_db']:.1f} dB |
 | max DNL / INL (histogram) | {st['dnl_max']:.3f} / {st['inl_max']:.3f} LSB |
+| max DNL / INL (transition levels) | {st['dnl_t_max']:.3f} / {st['inl_t_max']:.3f} LSB |
 | missing codes | {st['missing_codes']} |
 | offset / gain error | {st['offset_lsb']:.3f} / {st['gain_error_lsb']:.3f} LSB |
 | comparator offset sigma (MC, n={co['n']}) | {co['sigma'] * 1e3:.2f} mV ({co['sigma'] / s['lsb']:.3f} LSB) |
-| power (analog: comparator + CDAC + switches) | {pw['p_total'] * 1e6:.2f} uW |
+| power (comparator + CDAC + switches + SAR logic cells) | {pw['p_total'] * 1e6:.2f} uW |
 | energy / conversion | {pw['energy_per_conv'] * 1e12:.3f} pJ |
 | Walden FoM | {pw['walden_fom_J'] * 1e15:.1f} fJ/conv-step |
 | MC ({mc['runs']} runs) 99th-pct DNL / INL | {mc['dnl_p99']:.3f} / {mc['inl_p99']:.3f} LSB |

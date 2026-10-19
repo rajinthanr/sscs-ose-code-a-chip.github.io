@@ -12,7 +12,7 @@ K_B = 1.380649e-23
 
 
 def _ceil(x, grid=0.05):
-    return math.ceil(x / grid - 1e-9) * grid
+    return round(math.ceil(x / grid - 1e-9) * grid, 3)
 
 
 class Log(list):
@@ -60,6 +60,8 @@ def size_sar(spec, char: dict) -> dict:
     l_in = 0.3
     w_in = _ceil(max(wl_in / l_in, 2.0), 0.1)
     sig_os_est = char["avt_n_mVum"] * 1e-3 / math.sqrt(w_in * l_in)
+    log.add("comparator", "offset only shifts the transfer curve here (no DNL/INL): spec = offset error",
+            f"3 sigma_os <= {spec.offset_3sigma_lsb} LSB", f"sigma_os <= {sig_os_t * 1e3:.2f} mV")
     log.add("comparator", "sigma_os ~ A_VT / sqrt(W L) <= offset_3sigma * LSB / 3",
             f"A_VT = {char['avt_n_mVum']:.2f} mVum, target {sig_os_t * 1e3:.2f} mV",
             f"W L >= {wl_in:.3f} um^2 -> W/L = {w_in:.1f}/{l_in} (est. {sig_os_est * 1e3:.2f} mV)")
@@ -75,12 +77,13 @@ def size_sar(spec, char: dict) -> dict:
     # ---------------------------------------------------------------- sampling switches
     t_track = 0.85 * T
     tau_s = t_track / ln_settle
-    r_unit = tau_s / 2 / cu                    # half of the budget for the bit switch ...
-    r_top = tau_s / 2 / c_tot                  # ... half for the shared top-plate switch
+    # the shared top-plate switch carries the charge of the whole array, so it gets 3/4 of the budget
+    r_unit = tau_s / 4 / cu
+    r_top = 3 * tau_s / 4 / c_tot
     rw_tg = char["ron_tg_ohm_um"]
     in_wn = _ceil(max(rw_tg / r_unit, W_MIN))
     top_wn = _ceil(max(rw_tg / r_top, W_MIN))
-    log.add("sampling", "tau = T_track / ln(2^N / settle_lsb); split between bit and top switch",
+    log.add("sampling", "tau = T_track / ln(2^N / settle_lsb); 1/4 bit switch, 3/4 top switch",
             f"T_track = {t_track * 1e9:.2f} ns, tau <= {tau_s * 1e12:.0f} ps",
             f"R_unit <= {r_unit / 1e3:.1f} kOhm, R_top <= {r_top:.0f} Ohm")
     log.add("sampling", "W_n = (R_on W)_TG,worst / R  (Wp = 2 Wn), bit-i switch = 2^i units",
