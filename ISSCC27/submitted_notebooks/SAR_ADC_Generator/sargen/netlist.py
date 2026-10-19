@@ -59,18 +59,21 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
     out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm",
            "* ---- top-plate sampling switch (to vcm)"]
     fl = sw.get("flavor", "std")
-    out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], fl)
+    out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
     for i in range(bits):
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
         for u in range(m):
             out.append(mim(f"C{i}_{u}", "top", f"bot_{i}", cu["side"], cu["side"]))
-        out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], fl, m)
+        # MSB stops tracking at phis and goes to Vref; the other plates keep tracking Vin until phig,
+        # so the top plate moves to Vcm + (Vref - Vin)/2 first and never leaves [0, Vref]
+        en, enb = ("phis", "phisb") if i == bits - 1 else ("phig", "phigb")
+        out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", en, enb, sw["in_wn"], sw["in_wp"], fl, m)
         out.append(mos(f"Mdp{i}", f"bot_{i}", f"pg_{i}", "vref", "vdd", PFET, drv["wp"], L, m))
         out.append(mos(f"Mdn{i}", f"bot_{i}", f"ng_{i}", "0", "0", NFET, drv["wn"], L, m))
     out.append("* ---- dummy (termination) unit cap: samples vin, then grounded")
     out.append(mim("Cd", "top", "botd", cu["side"], cu["side"]))
-    out += tg_lines("Msd", "botd", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], fl)
+    out += tg_lines("Msd", "botd", "vin", "phig", "phigb", sw["in_wn"], sw["in_wp"], fl)
     out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
     if cp_top > 0:
         out.append(f"Cptop top 0 {cp_top:.4g}")
@@ -173,19 +176,21 @@ class Timing:
         lines = ["* ---- timing (ideal sources)",
                  p("phis", 0, self.t_bot_open, Tc), p("phisb", 0, self.t_bot_open, Tc, True),
                  p("phit", 0, self.t_top_open, Tc), p("phitb", 0, self.t_top_open, Tc, True),
-                 # break-before-make: the ground switches wait for phig (falls after the MSB is set)
+                 # non-MSB plates track Vin until phig, then go to ground (after the MSB is at Vref)
                  p("phig", 0, self.t_gnd_on, Tc), p("phigb", 0, self.t_gnd_on, Tc, True),
                  p("clkt", 0.5 * T, 0.45 * T, T),          # comparator clock template
                  p("en", T, N * T, Tc)]                    # enable during bit trials
+        # The decision is latched at 0.80 T and the trial window ends at 0.92 T, so a rejected plate
+        # returns to ground before the next plate is set (release-before-set): no top-plate glitch.
         for i in range(N):
             k = N - i                                      # bit i is tried in cycle k (MSB first)
             if i == N - 1:
                 # MSB is set the moment sampling ends, so the top plate stays within
                 # [Vcm - Vref/2, Vcm + Vref/2] and never forward-biases the switch junctions
-                lines.append(p(f"trial_{i}", self.t_bot_open, 2 * T - self.t_bot_open, Tc))
+                lines.append(p(f"trial_{i}", self.t_bot_open, T + 0.92 * T - self.t_bot_open, Tc))
             else:
-                lines.append(p(f"trial_{i}", k * T, T, Tc))
-            lines.append(p(f"latch_{i}", k * T + 0.93 * T, 0.04 * T, Tc))
+                lines.append(p(f"trial_{i}", k * T, 0.92 * T, Tc))
+            lines.append(p(f"latch_{i}", k * T + 0.80 * T, 0.04 * T, Tc))
         return "\n".join(lines)
 
 
