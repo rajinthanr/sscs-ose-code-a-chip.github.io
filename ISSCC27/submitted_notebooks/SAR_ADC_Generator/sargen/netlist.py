@@ -69,7 +69,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
     out.append("* ---- dummy (termination) unit cap: samples vin, then grounded")
     out.append(mim("Cd", "top", "botd", cu["side"], cu["side"]))
     out += tg_lines("Msd", "botd", "vin", "phis", "phisb", sw["in_wn"], sw["in_wp"], L)
-    out.append(mos("Mddn", "botd", "phisb", "0", "0", NFET, drv["wn"], L))
+    out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
     if cp_top > 0:
         out.append(f"Cptop top 0 {cp_top:.4g}")
     return "\n".join(out)
@@ -77,7 +77,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
 
 def sar_logic(bits: int, vdd: float) -> str:
     """Synchronous SAR logic in XSPICE digital models (idealised, zero power)."""
-    dig_in = ["phis", "clkt", "en"] + [f"trial_{i}" for i in range(bits)] + \
+    dig_in = ["phis", "phig", "clkt", "en"] + [f"trial_{i}" for i in range(bits)] + \
              [f"latch_{i}" for i in range(bits)] + ["qp"]
     ana_in = " ".join(dig_in)
     dig = " ".join(f"d_{n}" for n in dig_in)
@@ -93,7 +93,7 @@ def sar_logic(bits: int, vdd: float) -> str:
             f"aff{i} d_qp d_latch_{i} NULL d_phis d_b{i} d_b{i}n dff_d",
             f"aor{i} [d_trial_{i} d_b{i}] d_ctrl{i} or_d",
             f"apg{i} [d_ctrl{i} d_phisb] d_pg{i} nand_d",
-            f"ang{i} [d_ctrl{i} d_phis] d_ng{i} nor_d",
+            f"ang{i} [d_ctrl{i} d_phig] d_ng{i} nor_d",
         ]
         outs_d += [f"d_pg{i}", f"d_ng{i}", f"d_b{i}"]
         outs_a += [f"pg_{i}", f"ng_{i}", f"bo_{i}"]
@@ -121,7 +121,7 @@ def sar_logic_cells(bits: int) -> str:
     """Synchronous SAR logic built from SKY130 standard cells (sky130_fd_sc_hd), powered from vdd.
 
     Same function as sar_logic(): b_i = DFF(D = qp, CLK = latch_i, reset while sampling),
-    ctrl_i = trial_i | b_i, pg_i = NAND(ctrl_i, phisb), ng_i = NOR(ctrl_i, phis).
+    ctrl_i = trial_i | b_i, pg_i = NAND(ctrl_i, phisb), ng_i = NOR(ctrl_i, phig).
     """
     p = "0 0 vdd vdd"                                   # VGND VNB VPB VPWR
     lines = ["* ---- SAR logic (sky130_fd_sc_hd standard cells)",
@@ -132,7 +132,7 @@ def sar_logic_cells(bits: int) -> str:
             f"Xff{i} latch_{i} qp phisb {p} bo_{i} sky130_fd_sc_hd__dfrtp_1",
             f"Xor{i} trial_{i} bo_{i} {p} ctrl_{i} sky130_fd_sc_hd__or2_1",
             f"Xpg{i} ctrl_{i} phisb {p} pg_{i} {_cell('nand2', m)}",
-            f"Xng{i} ctrl_{i} phis {p} ng_{i} {_cell('nor2', m)}",
+            f"Xng{i} ctrl_{i} phig {p} ng_{i} {_cell('nor2', m)}",
         ]
     return "\n".join(lines)
 
@@ -156,6 +156,10 @@ class Timing:
         return 0.90 * self.tclk
 
     @property
+    def t_gnd_on(self):            # non-MSB plates are grounded only after the MSB reached Vref
+        return self.t_bot_open + 0.04 * self.tclk
+
+    @property
     def t_read(self):              # all bits final, read-out instant
         return (self.bits + 1.5) * self.tclk
 
@@ -167,6 +171,8 @@ class Timing:
         lines = ["* ---- timing (ideal sources)",
                  p("phis", 0, self.t_bot_open, Tc), p("phisb", 0, self.t_bot_open, Tc, True),
                  p("phit", 0, self.t_top_open, Tc), p("phitb", 0, self.t_top_open, Tc, True),
+                 # break-before-make: the ground switches wait for phig (falls after the MSB is set)
+                 p("phig", 0, self.t_gnd_on, Tc), p("phigb", 0, self.t_gnd_on, Tc, True),
                  p("clkt", 0.5 * T, 0.45 * T, T),          # comparator clock template
                  p("en", T, N * T, Tc)]                    # enable during bit trials
         for i in range(N):
