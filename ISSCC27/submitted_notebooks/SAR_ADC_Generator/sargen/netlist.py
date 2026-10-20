@@ -93,8 +93,18 @@ def load_cdac_extraction(path, bits) -> list[str]:
     return out
 
 
+def subckt_pins(path, name):
+    """Port list of `.subckt name ...` in a SPICE file (handles '+' continuation lines)."""
+    txt = open(path).read().replace("\n+", " ")
+    for ln in txt.splitlines():
+        t = ln.split()
+        if len(t) > 1 and t[0].lower() == ".subckt" and t[1] == name:
+            return t[2:]
+    raise ValueError(f"subckt {name} not found in {path}")
+
+
 def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac_lines=None,
-             sw_extracted=False) -> str:
+             sw_extracted=False, cdacsw_pins=None) -> str:
     """CDAC + switches + comparator (transistor level).
 
     cap_values: optional list of 2^N ideal capacitances (bit-major, dummy last) replacing the MIM
@@ -105,6 +115,14 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
     cu, sw, drv, L = design["cu"], design["sw"], design["drv"], design["l_sw"]
     out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm"]
     fl = sw.get("flavor", "std")
+    if cdacsw_pins:          # compact CDAC: every unit cap with its own switch (layout extraction)
+        out += ["* ---- top-plate sampling switch (to vcm)"]
+        out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
+        out += ["* ---- CDAC with per-unit switches from layout extraction",
+                "Xcdacsw " + " ".join("0" if p == "vss" else p for p in cdacsw_pins) + " cdacsw"]
+        if cp_top > 0:
+            out.append(f"Cptop top 0 {cp_top:.4g}")
+        return "\n".join(out)
     if sw_extracted:
         out += ["* ---- switch array from layout extraction",
                 "Xsw " + " ".join("0" if p == "vss" else p for p in switch_pins(bits)) + " switches"]
@@ -254,7 +272,7 @@ class Timing:
 
 def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=False,
                   cp_top=0.0, save=None, power=True, logic="cells", cap_values=None, cdac_lines=None,
-                  cmp_subckt=None, sw_subckt=None) -> str:
+                  cmp_subckt=None, sw_subckt=None, cdacsw=None) -> str:
     """Full transient testbench with `n_conv` conversions (+1 leading dummy conversion)."""
     tim = Timing(spec.bits, spec.tclk)
     tstop = (n_conv + 1) * tim.tconv
@@ -273,12 +291,14 @@ def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=Fa
 .option method=gear
 {cmp_subckt or strongarm_subckt(design['cmp'])}
 {sw_subckt or ''}
+{cdacsw[0] if cdacsw else ''}
 Vdd vdd 0 {spec.vdd}
 Vref vref 0 {spec.vref}
 Vcm vcm 0 {spec.vcm}
 {vin_line}
 {tim.sources(spec.vdd)}
-{sar_core(design, spec.bits, cp_top, cap_values, cdac_lines, sw_extracted=bool(sw_subckt))}
+{sar_core(design, spec.bits, cp_top, cap_values, cdac_lines, sw_extracted=bool(sw_subckt),
+          cdacsw_pins=cdacsw[1] if cdacsw else None)}
 {sar_logic_cells(spec.bits) if logic == "cells" else sar_logic(spec.bits, spec.vdd)}
 .save {' '.join(save)} i(vdd) i(vref) i(vcm)
 .tran {spec.tclk / 100:.4g} {tstop:.6g} 0 {spec.tclk / 25:.4g}

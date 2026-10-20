@@ -27,7 +27,13 @@ def main():
     cdac = dict(cdac_lines=nl.load_cdac_extraction(pex_dir / f"cdac{a.bits}b_pex.spice", a.bits))
     cmp_ = dict(cmp_subckt=nl.load_strongarm_extraction(pex_dir / "strongarm_pex.spice"))
     sw = dict(sw_subckt=nl.wrap_extraction(pex_dir / "switches_pex.spice", "switches", nl.switch_pins(a.bits)))
+    lay = base / "layout"
+    cdacsw = {}
+    if (pex_dir / f"cdacsw{a.bits}b_pex.spice").exists():
+        pins = nl.subckt_pins(lay / f"cdacsw{a.bits}b_ref.spice", f"cdacsw{a.bits}b")
+        cdacsw = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacsw{a.bits}b_pex.spice", "cdacsw", pins), pins))
     cases = [("schematic", {}), ("extracted CDAC", cdac), ("extracted comparator", cmp_),
+             ("compact CDAC+switches", cdacsw), ("compact CDAC+switches + comparator", {**cdacsw, **cmp_}),
              ("extracted switches", sw), ("all blocks extracted", {**cdac, **cmp_, **sw})]
     if a.only:
         cases = [c for c in cases if c[0] in a.only]
