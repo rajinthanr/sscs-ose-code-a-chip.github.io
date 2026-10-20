@@ -5,7 +5,7 @@
     [Mop1] [vdd Mp1 outn Mr1 vdd Mr3 xp] | mirror   PMOS: latch + reset share diffusion, output inverter outside
     outp / outn tracks, swapped on the axis         cross-coupling with equal parasitics on both outputs
     [Mon1] [outn Mn1 xp]                 | mirror   NMOS latch, output inverter outside
-    tail A xp A tail B xn B tail                    input pair, clustered (each drain an inner diffusion)
+    dmy tail A xp A tail B xn B tail dmy            input pair, clustered (each drain an inner diffusion), dummies
     inp / inn tracks                                inputs leave sideways, away from clk and the outputs
     vss tail vss                                    clocked tail on the symmetry axis
     clk comb + vss rail + p-tap
@@ -14,8 +14,11 @@ Layout rules followed (Razavi, SSC Magazine 2015 / 2020; Hastings, The Art of An
 Sharma et al., DATE 2021): mirror symmetry with the tail and the clock on the axis, so clock and tail charge
 couple equally to both sides; identical drain geometry for the input pair (equal Cgd and node capacitance on
 xp / xn: no dynamic offset), each device clustered rather than common-centroid at this size; all gates in one
-direction; equal routing on the two outputs (the cross-coupling tracks swap on the axis); inputs routed apart
-from the clock and the outputs.  All devices are standard-Vt (the PDK's LVT matches ~1.6x worse).
+direction; equal routing on the two outputs (the cross-coupling tracks swap on the axis, a met3 trim stub
+balances the crossing); inputs routed apart from the clock and the outputs; dummy fingers (all terminals on
+tail) at both ends of the input pair; p-tap guard stripes beside the NMOS rows and n-tap stripes beside the
+PMOS row, closing guard rings with the tap strips under the rails.  All devices are standard-Vt (the PDK's LVT
+matches ~1.6x worse).
 """
 
 import math
@@ -34,10 +37,12 @@ R_NPC_SP = 0.27
 RAIL_W = 0.48           # vss / vdd rails (met1)
 TAP_H, TAP_LI, LICON_P = 0.41, 0.33, 0.36   # tap strip under a rail: tap height, li height, licon / mcon pitch
 R_DIFF_TAP = 0.27
+R_NWELL_PTAP = 0.13 + TAP_H / 2
 M1_STUB = 0.23          # met1 vertical stubs (mcon + 0.03)
 TRK = 0.26              # met2 track width (= via1 pad height, so vias sit flush in a track)
 TRK_IN = 0.14           # inp / inn / clk tracks
 XJ = 0.46               # output tracks swap between x = -XJ and +XJ
+TRIM_L = 0.80           # met3 trim stub on outn: extracted outp / outn within 0.15 % (4- and 6-bit sizing)
 
 
 class Row:
@@ -183,10 +188,12 @@ def strongarm_rows(c):
     # input pair: m fingers each (m even), clustered: tail A xp A tail ... | ... tail B xn B tail
     m = max(2, 2 * round(c["w_in"] / (2 * WF_IN)))
     wi = c["w_in"] / m
-    inp = Row([(f"Mi1.{i}", dev("Mi1", "n", wi, Lin), "inp", "bot", ("tail", "xp")[i % 2], ("xp", "tail")[i % 2])
+    dmy = lambda n: (n, dev("Md", "n", wi, Lin), "tail", "bot", "tail", "tail")   # dummy: all terminals on tail
+    inp = Row([dmy("Md1")] +
+              [(f"Mi1.{i}", dev("Mi1", "n", wi, Lin), "inp", "bot", ("tail", "xp")[i % 2], ("xp", "tail")[i % 2])
                for i in range(m)] +
               [(f"Mi2.{i}", dev("Mi2", "n", wi, Lin), "inn", "bot", ("tail", "xn")[i % 2], ("xn", "tail")[i % 2])
-               for i in range(m)])
+               for i in range(m)] + [dmy("Md2")])
     inp.center()
     x_xp = min(x for x, n, _ in inp.bars("xp"))                   # outermost xp bar of the pair
     # NMOS latch (left): output-inverter NMOS outside, Mn1 with its xp bar above the pair's
@@ -210,7 +217,7 @@ def strongarm_rows(c):
     mon = nl.by["Mon1"]
     assert x_q + mon["fe"].sd <= mon["x"] + 1e-6, "output inverter NMOS cannot sit under its PMOS"
     mon["x"] = x_q + mon["fe"].sd
-    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw)
+    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummy=(wi, Lin))
 
 
 def build_strongarm(c, name="strongarm"):
@@ -284,15 +291,25 @@ def build_strongarm(c, name="strongarm"):
              max(f["x"] + f["fe"].imp[1] for f, y in fs), max(y + f["dy"] + f["fe"].imp[3] for f, y in fs), lay)
 
     xs = [f["x"] + f["fe"].diff[k] for row in (tail, inp, nl, nr, pl, pr) for f in row.f for k in (0, 1)]
-    x_edge = max(abs(v) for v in xs) + 0.3
-    xr = x_edge - 0.3 - M3_PAD / 2                                  # clk risers (met3), over the outermost devices
+    x_dev = max(abs(v) for v in xs)
+    x_imp = max(abs(f["x"] + f["fe"].imp[k]) for row in (tail, inp, nl, nr, pl, pr) for f in row.f for k in (0, 1))
+    x_ring = max(x_dev + R_DIFF_TAP, x_imp + 0.13) + TAP_H / 2      # guard stripes clear of diffusion and implant
+    x_edge = x_ring + TAP_H / 2 + 0.18                              # n-well encloses the n-tap stripes by 0.18
+    xr = x_dev - M3_PAD / 2                                         # clk risers (met3), over the outermost devices
     X0, X1 = -x_edge, x_edge
 
     # ---------------------------------------------------------------- rails, taps, n-well
     for yr, kind in ((0.0, "p"), (y_vdd, "n")):
         hline(yr + RAIL_W / 2, X0, X1, MET1, RAIL_W)
         _tap_strip(top, X0 + 0.2, X1 - 0.2, yr + RAIL_W / 2, kind)
-    rect(X0, pl.span(yP, "diff", 2) - 0.18, X1, H + 0.3, NWELL)
+    nw0 = pl.span(yP, "diff", 2) - 0.18
+    rect(X0, nw0, X1, H + 0.3, NWELL)
+    # guard rings: p-tap stripes beside the NMOS rows up to the n-well, n-tap stripes beside the PMOS row;
+    # with the tap strips under the rails they ring the NMOS and the PMOS devices
+    for x in (-x_ring, x_ring):
+        p_top = min(nw0 - R_NWELL_PTAP, pl.span(yP, "imp", 2) - R_IMP_SP - 0.13)
+        _tap_strip(top, RAIL_W / 2, p_top, x, "p", vertical=True, margin=TAP_H)
+        _tap_strip(top, nw0 + 0.18, y_vdd + RAIL_W / 2, x, "n", vertical=True, margin=TAP_H)
 
     # ---------------------------------------------------------------- tail: vss down, tail up, clk comb
     for x, n, f in tail.bars("vss"):
@@ -312,6 +329,10 @@ def build_strongarm(c, name="strongarm"):
     for x, n, f in ib:
         v1(x, y_tt)
     hline(y_tt, min(b[0] for b in ib), max(b[0] for b in ib), MET2, TRK)
+    for g in inp.gates("tail"):                                     # input-pair dummies: gate -> tail
+        mcon(g["x"], y_in)
+        vline(g["x"], y_in, y_tt, MET1, M1_STUB)
+        hline(y_tt, g["x"] - g["fe"].sd, g["x"] + g["fe"].sd, MET1, V1_M1[1])
     for x, n, f in tail.bars("tail"):
         mcon(x, bar_y(f, yT, 1) - MC / 2)
         vline(x, bar_y(f, yT, 1) - MC, y_tt, MET1, M1_STUB)
@@ -378,6 +399,12 @@ def build_strongarm(c, name="strongarm"):
     vline(-XJ, y_lo - M3_PAD / 2, y_hi + M3_PAD / 2, MET3, M3_PAD)
     hline(y_lo, -XJ - M3_PAD / 2, XJ + M3_PAD / 2, MET3, M3_PAD)
     vline(0.0, y_lo - TRK / 2, y_hi + TRK / 2, MET2, TRK)          # outn: y_lo (left) -> y_hi (right) on the axis
+    # the crossing puts outp on met3 (and outn on met2) between -XJ and +XJ: a met3 trim stub on outn's
+    # right track balances the two output capacitances (tuned on the extracted layout)
+    if TRIM_L > 0:                                    # (start clear of the xn met1 column)
+        xs0 = max(XJ + M2_PAD + R_M2_SP, nr.bars("xn")[0][0] + 0.6)
+        v2(xs0, y_hi)
+        hline(y_hi, xs0 - M3_PAD / 2, xs0 + TRIM_L, MET3, M3_PAD)
     assert XJ - M2_PAD / 2 - TRK / 2 >= R_M2_SP
 
     # ---------------------------------------------------------------- output inverters: qp / qn met1 columns
@@ -419,19 +446,26 @@ def build_strongarm(c, name="strongarm"):
     top.name = name
     bb = top.bbox
     info = dict(width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),
-                fingers=dict(tail=len(tail.f), inp=len(inp.f) // 2))
+                fingers=dict(tail=len(tail.f), inp=(len(inp.f) - 2) // 2), dummy=R["dummy"])
     return top, info
 
 
-def _tap_strip(top, xa, xb, yc, kind):
-    """Substrate (p) or n-well (n) tap strip under a met1 rail: tap, licons, li, mcons, implant."""
-    rect = lambda xa_, ya, xb_, yb, lay: _poly(top, xa_, ya, xb_, yb, lay)
+def _tap_strip(top, xa, xb, yc, kind, vertical=False, margin=0.0):
+    """Substrate (p) or n-well (n) tap strip: tap, licons, li, implant (+ mcons to a met1 rail above it).
+    Horizontal from xa to xb at height yc, or vertical (vertical=True) from y = xa to xb at x = yc."""
+    def rect(a0, b0, a1, b1, lay):                  # (along, across) -> layout
+        if vertical:
+            _poly(top, b0, a0, b1, a1, lay)
+        else:
+            _poly(top, a0, b0, a1, b1, lay)
+    xa, xb = min(xa, xb), max(xa, xb)
     rect(xa, yc - TAP_H / 2, xb, yc + TAP_H / 2, TAP)
     rect(xa - 0.13, yc - TAP_H / 2 - 0.13, xb + 0.13, yc + TAP_H / 2 + 0.13, PSDM if kind == "p" else NSDM)
     rect(xa + 0.04, yc - TAP_LI / 2, xb - 0.04, yc + TAP_LI / 2, LI)
-    n = int((xb - xa - 0.24 - MC) / LICON_P) + 1
-    x0 = (xa + xb) / 2 - (n - 1) * LICON_P / 2
+    n = int((xb - xa - 2 * margin - 0.24 - MC) / LICON_P) + 1     # no contacts within margin of the ends
+    x0 = snap((xa + xb) / 2 - (n - 1) * LICON_P / 2)              # contacts on the 5 nm grid
     for i in range(n):
         x = x0 + i * LICON_P
         rect(x - MC / 2, yc - MC / 2, x + MC / 2, yc + MC / 2, LICON)
-        rect(x - MC / 2, yc - MC / 2, x + MC / 2, yc + MC / 2, MCON)
+        if not vertical:
+            rect(x - MC / 2, yc - MC / 2, x + MC / 2, yc + MC / 2, MCON)

@@ -42,7 +42,12 @@ def do_comparator(bits, out):
     comp.write_gds(gds)
     info["gen_s"] = time.time() - t0
     ref = out / "strongarm_ref.spice"
-    ref.write_text(nl.strongarm_subckt(design["cmp"]) + "\n")
+    from sargen.pdk import NFET, mos
+    w, l = info["dummy"]                         # input-pair dummies (all terminals on tail) are in the layout
+    sub = nl.strongarm_subckt(design["cmp"]).replace(
+        ".ends strongarm", "\n".join(mos(f"Md{i}", "tail", "tail", "tail", "vss", NFET, w, l) for i in (1, 2))
+        + "\n.ends strongarm")
+    ref.write_text(sub + "\n")
     print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.2f} x {info['height']:.2f} um, "
           f"fingers {info['fingers']}")
     return gds, ref, "strongarm", info
