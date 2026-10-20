@@ -448,31 +448,65 @@ def build_abut_test(design, rails, gate_maps, cols=3, rows=2, name="cdac_unit_2x
     return top, plan, _subckt(name, pins, lines)
 
 
-def rowwise_grid(bits):
-    """Common-centroid assignment that keeps few bits per row (few control rails).
+MAX_GROUPS = 3          # bit groups per row: 2 drive rails each, 6 drive rails = the 8-track unit cell
 
-    Point-symmetric cell pairs are taken row by row from the outside in; groups are dealt largest first,
-    so the MSB fills the outer row pair, smaller bits share the inner rows.  Every group is a set of
-    point-symmetric pairs (centroid exactly at the array centre); the LSB and the termination unit share
-    the last pair."""
+
+def rowwise_grid(bits):
+    """Common-centroid assignment for the fixed unit cell: few bits per row (few control rails).
+
+    Rows are taken in pairs (r, R-1-r); a unit at (r, c) pairs with (R-1-r, C-1-c), so every bit made of such
+    point-symmetric pairs has its centroid exactly at the array centre.  The MSB (sampled on phis, the others
+    on phig) fills the outer row pairs; the other bits are packed into the inner row pairs with at most
+    MAX_GROUPS bits per row (the LSB and the termination unit share one pair).  Both orientations of the
+    array are tried; if neither packs, rows may carry more bits (taller cells)."""
     from .cdac import array_shape
-    R, C = array_shape(bits)
-    pairs, seen = [], set()
-    for r in range(R):
-        for c in range(C):
-            if (r, c) not in seen:
-                m = (R - 1 - r, C - 1 - c)
-                seen |= {(r, c), m}
-                pairs.append(((r, c), m))
+    R0, C0 = array_shape(bits)
+    for R, C, k in ((R0, C0, MAX_GROUPS), (C0, R0, MAX_GROUPS), (R0, C0, None)):
+        grid = _pack_grid(bits, R, C, k)
+        if grid:
+            return grid
+    raise ValueError(f"no row-wise grid for {bits} bits")
+
+
+def _pack_grid(bits, R, C, max_groups):
+    from itertools import combinations
+    msb = 2 ** (bits - 2)                                  # MSB point-symmetric pairs
+    if R % 2 or msb % C:
+        return None
+    n_msb, n_bins = msb // C, R // 2 - msb // C
+    sizes = {g: 2 ** (g - 1) for g in range(bits - 2, 0, -1)}
+    sizes["L"] = 1                                          # LSB + termination unit
+    k_max = max_groups or len(sizes)
+
+    def fill(i, rem):
+        if i == n_bins:
+            return [] if not any(rem.values()) else None
+        names = [g for g in rem if rem[g]]
+        for n in range(1, k_max + 1):
+            for combo in combinations(names, n):
+                for split in combo:                         # one group may be split over rows
+                    alloc = {g: rem[g] for g in combo if g != split}
+                    need = C - sum(alloc.values())
+                    if not 0 < need <= rem[split]:
+                        continue
+                    alloc[split] = need
+                    rest = fill(i + 1, {g: rem[g] - alloc.get(g, 0) for g in rem})
+                    if rest is not None:
+                        return [alloc] + rest
+        return None
+
+    bins = fill(0, sizes)
+    if bins is None:
+        return None
     grid = [[None] * C for _ in range(R)]
-    k = 0
-    for g in reversed(range(1, bits)):
-        for _ in range(2 ** (g - 1)):
-            (a, b) = pairs[k]
-            grid[a[0]][a[1]] = grid[b[0]][b[1]] = g
-            k += 1
-    (a, b) = pairs[k]
-    grid[a[0]][a[1]], grid[b[0]][b[1]] = 0, "d"
+    rows = [[(bits - 1, C)]] * n_msb + [sorted(b.items(), key=lambda t: -sizes[t[0]]) for b in bins]
+    for r, row in enumerate(rows):
+        j = 0
+        for g, n in row:
+            for _ in range(n):
+                a, b = (0, "d") if g == "L" else (g, g)
+                grid[r][j], grid[R - 1 - r][C - 1 - j] = a, b
+                j += 1
     return grid
 
 
@@ -496,6 +530,9 @@ def build_unit_array(design, bits, name=None, grid=None):
     and the top-plate straps by a met4 bar above it.  Returns (Component, info, reference netlist)."""
     from gdsfactory import Component
 
+    from ..pdk import MIM_MIN_SIDE
+    # every resolution uses the same unit cell: minimum-size PDK MIM cap, same switches
+    design = {**design, "cu": {**design["cu"], "side": MIM_MIN_SIDE}}
     grid = grid or rowwise_grid(bits)
     R, C = len(grid), len(grid[0])
     gates = [[unit_gates(g, bits) for g in row] for row in grid]
