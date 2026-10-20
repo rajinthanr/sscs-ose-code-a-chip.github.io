@@ -16,8 +16,8 @@ GRID = 0.005                      # um, manufacturing grid
 # sky130 layers (GDS layer, datatype)
 MET2, MET3, MET4 = (69, 20), (70, 20), (71, 20)
 VIA2 = (69, 44)
-LBL = {MET2: (69, 5), MET3: (70, 5), MET4: (71, 5)}
-PIN = {MET2: (69, 16), MET3: (70, 16), MET4: (71, 16)}
+LBL = {MET2: (69, 5), MET3: (70, 5), MET4: (71, 5), (72, 20): (72, 5)}
+PIN = {MET2: (69, 16), MET3: (70, 16), MET4: (71, 16), (72, 20): (72, 16)}
 
 # routing geometry (um) from the sky130 rules: via2 0.2 sq., met2 enc. 0.085, met3 enc. 0.065
 VIA = 0.20
