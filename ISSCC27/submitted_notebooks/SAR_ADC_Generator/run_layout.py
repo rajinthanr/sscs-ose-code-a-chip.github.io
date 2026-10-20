@@ -79,7 +79,7 @@ def do_cdacsw(bits, out):
     return gds, ref, comp.name, info
 
 
-TEST_RAILS = (["phis", "phisb", "phig", "phigb"], ["pg_0", "ng_0", "pg_1", "ng_1"])   # (sample, drive)
+TEST_RAILS = (["phisb", "phigb", "phig", "phis"], ["pg_0", "ng_0", "pg_1", "ng_1"])   # (sample, drive), bottom to top
 TEST_GATES = [dict(en="phig", enb="phigb", pg="pg_0", ng="ng_0"), dict(en="phis", enb="phisb", pg="pg_1", ng="ng_1"),
               dict(en="phig", enb="phigb", pg="pg_1", ng="ng_1"), dict(en="phis", enb="phisb", pg="pg_0", ng="ng_0")]
 

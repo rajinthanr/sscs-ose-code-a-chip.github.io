@@ -1,45 +1,51 @@
 """CDAC unit cell: one MIM unit capacitor with its own bottom-plate switch, built for abutment (SKY130).
 
-    y ^  drive rails pg_k / ng_k    met2, edge to edge   <- Mdn, Mdp gates (contact above the diffusion)
-         [Mdn][Msn] | [Msp][Mdp]    SKY130 PDK FET PCells (li only), plate bus (met2) through the row
-         sample rails phi*          met2, edge to edge   <- Msn, Msp gates (contact below the diffusion)
-       x ->  vss ......... vin ......... vref  vdd      supplies: vertical met1 lines, edge to edge
-             NMOS edge (x = 0)          PMOS edge + n-well (x = W)
+    y ^  ...........  MIM cap (PDK PCell): only met2 rails underneath (capm.10)  ......  | n-well column,
+         drive rails pg_k / ng_k  met2, edge to edge, pass under the cap              | vref / vdd lines
+         vin rail                 met2                                                | (met1), n-tap
+         [Mdn][Msn] | [Msp][Mdp]  SKY130 PDK FET PCells (li only) + plate bus (met2) in the street between
+         sample rails phi*        met2                          the caps of two rows (capm.11 spacing)
+       x ->  vss line, p-tap and top-plate strap on the NMOS edge (x = 0);  vref, vdd lines on the PMOS edge
 
-The MIM unit cap (SKY130 PDK PCell) covers the whole switch; its met3 plate shields the top plate from
-everything underneath.  The top plate leaves the PCell's C1 contact on a short met4 stub to a vertical met4
-strap on the vss edge (no met5: TinyTapeout power grid), so the strap only crosses the rails, never runs
-along one.  Cells are mirrored left/right in an array: the vss line, the p-tap and the top-plate strap are
-shared on the NMOS edge, the vdd line, the n-tap and the n-well on the PMOS edge.  Rows abut vertically
-(supply lines, strap and n-well run through).  The cell size is set by the MIM spacing rule capm.11
-(1.34 um from capm to an unrelated met3), the switch fits underneath.  Only the via positions of the four
-gates differ between cells, so every unit is geometrically identical.
+SKY130 rule capm.10 keeps nwell, diff, tap, poly, li and met1 out from under a MIM cap, so the four switch
+transistors sit in the street that capm.11 (1.34 um from capm to an unrelated met3) leaves between the caps of
+two rows, and under the PCell's capm-free bottom-plate overhang.  Gates that are not under the cap's x-range
+(Mdn on the NMOS edge, Msp and Mdp beside the cap) reach any rail through li/met1 stubs beside the cap; Msn
+(under the cap's x-range) reaches only the sample rails in the street.  The cap's met3 plate shields its top
+plate from everything below; the top plate leaves the PCell's C1 contact on a met4 stub to a vertical met4
+strap on the vss edge (no met5: TinyTapeout power grid).  Cells are mirrored left/right in an array: the vss
+line, p-tap and strap are shared on the NMOS edge, the vdd line, n-tap and n-well column on the PMOS edge.
+Rows abut vertically.  Only the via positions of the four gates differ between cells, so every unit is
+geometrically identical.
 """
 
 from .cdac import LBL, M2_PAD, M3_PAD, MET2, MET3, MET4, PIN, VIA, VIA2, snap
 from .cell import DIFF, MET1, NWELL, VIA1, V1, Dev
 
 CAPM = (89, 44)
-LI, MCON, POLY = (67, 20), (67, 44), (66, 20)
+LI, MCON, POLY, TAP = (67, 20), (67, 44), (66, 20), (65, 44)
 NSDM, PSDM = (93, 44), (94, 20)
 LVTN = (125, 44)
+CAPM10 = [NWELL, DIFF, TAP, POLY, LI, MET1]   # capm.10: none of these under a MIM cap
 CTRL_PITCH, CTRL_W = 0.34, 0.14       # control rails (met2, min width); via1 pads widen to 0.26 at the via
 M1_LINE = 0.23                        # vertical supply line (met1): mcon + 0.03 enclosure
 MC = 0.17                             # mcon
 V1_M1 = (0.27, 0.32)                  # met1 pad around mcon + via1 (x, y)
 V1_M2 = (0.32, 0.26)                  # met2 pad around via1 on a horizontal rail (x, y)
-STRAP_W = 0.80                        # vertical top-plate strap (met4), centred on the vss edge
+STRAP_W = 0.40                        # vertical top-plate strap (met4), centred on the vss edge (2 ohm per array)
+TRUNK_STRAP = 0.40                    # trunks beside the array keep this far from the strap (top-plate coupling)
 STUB_W = 0.60                         # met4 stub from the PCell top contact C1 to the strap
-TAP_DY = 1.0                          # body taps this far below (p-tap) / above (n-tap) the plate bus
 SUPPLY = ["vss", "vin", "vref", "vdd"]
+LINES = ["vss", "vref", "vdd"]        # vertical met1 supply lines (vin is a met2 rail)
 GATE_SIDE = ["top", "bot", "bot", "top"]   # Mdn, Msn, Msp, Mdp: drive gates up, sample gates down
 # SKY130 rules used to pack the cell
-R_DIFF_SP, R_LI_SP, R_POLY_SP, R_M1_SP = 0.27, 0.17, 0.21, 0.14
+R_DIFF_SP, R_LI_SP, R_POLY_SP, R_M1_SP, R_M2_SP = 0.27, 0.17, 0.21, 0.14, 0.14
 R_NDIFF_NWELL, R_NWELL_PDIFF, R_LVT_GATE, R_LVTN_SP = 0.34, 0.18, 0.24, 0.38
 R_IMP_SP = 0.38                       # nsdm / psdm spacing: closer same-type implants are merged
 CAPM11 = 1.34                         # capm to unrelated met3
 VIA2_CAPM = 0.20                      # via2 clearance from a capm edge (magic capm.8)
 M3_SP = 0.30
+TOP_BAR_GAP = 0.40                    # met4 top-plate bar below an array / test block
 
 
 def cell_devices(design, gates, tag="u"):
@@ -71,18 +77,20 @@ def _ceil01(v):
 
 class _Fet:
     """A FET PCell and the geometry the cell is packed from: x from the gate centre, y from the diffusion
-    centre (the PCell is symmetric in x, so it is never mirrored)."""
+    centre (the PCell is symmetric in x, so it is never mirrored).  PMOS PCells lose their own n-well: the
+    cell draws one n-well for the pair that stays out from under the cap."""
 
     def __init__(self, dv, gate):
         from .cell import model_name
         from .pcell import fet, import_pcell
-        self.comp = c = import_pcell(*fet(model_name(dv), dv.w, dv.l, gate))
+        drop = ((235, 4), (67, 5), (68, 5), (71, 5)) + ((NWELL,) if dv.kind == "p" else ())
+        self.comp = c = import_pcell(*fet(model_name(dv), dv.w, dv.l, gate), drop_layers=drop)
         d = _ext(c, DIFF)
         self.oy = -(d[2] + d[3]) / 2                       # PCell origin -> diffusion centre
 
         def rel(e):
             return e and (e[0], e[1], e[2] + self.oy, e[3] + self.oy)
-        self.diff, self.poly, self.lvt, self.nw = rel(d), rel(_ext(c, POLY)), rel(_ext(c, LVTN)), rel(_ext(c, NWELL))
+        self.diff, self.poly, self.lvt = rel(d), rel(_ext(c, POLY)), rel(_ext(c, LVTN))
         self.imp = rel(_ext(c, NSDM) or _ext(c, PSDM))
         li = [rel((min(p[:, 0]), max(p[:, 0]), min(p[:, 1]), max(p[:, 1]))) for p in c.get_polygons(by_spec=LI)]
         bars = [b for b in li if b[2] < self.diff[3] and b[3] > self.diff[2]]
@@ -90,22 +98,44 @@ class _Fet:
         self.sd = max(abs(b[0] + b[1]) / 2 for b in bars)                  # bar centre from the gate
         self.bar_y = (min(b[2] for b in bars), max(b[3] for b in bars))
         self.pad, self.pad_y = pad, (pad[2] + pad[3]) / 2
+        # capm.10 layers of the PCell, for the street height
+        self.restricted = [rel((min(p[:, 0]), max(p[:, 0]), min(p[:, 1]), max(p[:, 1])))
+                           for lay in CAPM10 for p in c.get_polygons(by_spec=lay)]
         assert abs(self.diff[0] + self.diff[1]) < 1e-6, "FET PCell not symmetric in x"
 
 
 class UnitCellPlan:
     """Geometry shared by every cell of an array, packed from the PCells' real layer extents and SKY130 rules.
-    n_bot sample rails below the device row, n_top drive rails above it."""
 
-    def __init__(self, design, n_bot, n_top):
+    n_bot sample rails below the device row (the n_street nearest ones reachable by Msn, so inside the street),
+    n_top drive rails above the vin rail."""
+
+    def __init__(self, design, n_bot, n_top, n_street=None):
         from glayout import sky130, via_stack
         from .pcell import import_pcell, mim_cap
+        n_street = n_bot if n_street is None else n_street
         proto = cell_devices(design, dict(en="a", enb="b", pg="c", ng="d"), "proto")
         self.fets = f = [_Fet(d, s) for d, s in zip(proto, GATE_SIDE)]
-        self.n_bot, self.n_top = n_bot, n_top
+        self.n_bot, self.n_top, self.n_street = n_bot, n_top, n_street
+
+        # MIM unit cap = SKY130 PDK PCell (C1 top contact over the capm, C2 bottom-plate strip on the right).
+        # capm.11 against the mirrored neighbour on the vss edge (capm sides face each other), met3 spacing
+        # between the plates on the vdd edge (C2 sides face each other)
+        side = design["cu"]["side"]
+        self.unit = import_pcell(*mim_cap(side, side))
+        ub = self.unit.bbox
+        self.cap_x0, self.cap_x1, self.cap_y0, self.cap_y1 = ub[0][0], ub[1][0], ub[0][1], ub[1][1]
+        cm = self.capm = _ext(self.unit, CAPM)
+        c1 = [p for p in self.unit.get_polygons(by_spec=MET4) if min(p[:, 0]) < cm[1]][0]   # C2 is right of the capm
+        self.c1_x0 = min(c1[:, 0])
+        self.cap_cx = snap((CAPM11 - cm[0] - self.cap_x0) / 2 + 0.0025)
+        cl, cr = self.cap_cx + cm[0], self.cap_cx + cm[1]                  # capm x-range in the cell
+        self.capm_x = (cl, cr)
+        w_cap = self.cap_cx + self.cap_x1 + M3_SP / 2
+
+        # x: Mdn | Msn | n-well: Msp | Mdp | vref line | vdd line.  Facing inner bars carry plate met1 pads
         cg = V1_M1[0] / 2 + R_M1_SP + M1_LINE / 2           # gate met1 pad centre -> supply line centre
 
-        # x: Mdn | Msn | n-well: Msp | Mdp.  Facing inner bars carry plate met1 pads (0.27 + 0.14 apart)
         def same(a, b):
             d = max(f[a].diff[1] - f[b].diff[0] + R_DIFF_SP, f[a].sd + f[b].sd + V1_M1[0] + R_M1_SP)
             if f[b].lvt and not f[a].lvt:
@@ -114,81 +144,92 @@ class UnitCellPlan:
                 d = max(d, f[a].lvt[1] + R_LVT_GATE - f[b].poly[0])
             return d
 
-        np_d = f[1].diff[1] + R_NDIFF_NWELL - f[2].nw[0]          # n-diff to the PMOS PCell's n-well
+        def column(fe):                                     # half width of a gate column (pad, poly, via)
+            return max(V1_M1[0] / 2, fe.pad[1], fe.poly[1], MC / 2)
+
+        # NMOS edge: mirrored Mdn faces Mdn; its gate column clears the vss line and stays left of the capm
+        xg0 = max(R_DIFF_SP / 2 - f[0].diff[0], R_POLY_SP / 2 - f[0].poly[0], R_LI_SP / 2 - f[0].pad[0], cg)
+        assert xg0 + column(f[0]) <= cl, "Mdn gate column under the cap"
+        xg1 = xg0 + same(0, 1)
+        # n-diff -> n-well (0.34) -> p-diff (0.18); NMOS lvtn outside the well; Msp's gate column beside the capm
+        np_d = f[1].diff[1] + R_NDIFF_NWELL + R_NWELL_PDIFF - f[2].diff[0]
         if f[1].lvt:
-            np_d = max(np_d, f[1].lvt[1] - f[2].nw[0])           # NMOS lvtn fully outside the n-well
+            np_d = max(np_d, f[1].lvt[1] + R_NWELL_PDIFF - f[2].diff[0])
             if f[2].lvt:
                 np_d = max(np_d, f[1].lvt[1] + R_LVTN_SP - f[2].lvt[0])
-        np_d = max(np_d, 2 * cg)                                 # vin line between the two gate columns
-        # NMOS edge: mirrored Mdn faces Mdn; its gate pad clears the vss line on the edge
-        xg0 = max(R_DIFF_SP / 2 - f[0].diff[0], R_POLY_SP / 2 - f[0].poly[0], R_LI_SP / 2 - f[0].pad[0], cg)
-        self.xg = [snap(xg0)]
-        for d in (same(0, 1), np_d, same(2, 3)):
-            self.xg.append(snap(self.xg[-1] + d))
-        xg = self.xg
+        xg2 = max(xg1 + np_d, cr + column(f[2]))
+        xg3 = xg2 + same(2, 3)
+        self.xg = xg = [snap(v) for v in (xg0, xg1, xg2, xg3)]
         self.x_in = [xg[0] + f[0].sd, xg[1] - f[1].sd, xg[2] + f[2].sd, xg[3] - f[3].sd]   # plate bars
         self.x_out = [xg[0] - f[0].sd, xg[1] + f[1].sd, xg[2] - f[2].sd, xg[3] + f[3].sd]  # supply bars
-        self.nx0 = snap(min(xg[2] + f[2].nw[0], xg[3] + f[3].nw[0]))
-        self.sup_x = {"vss": 0.0, "vin": snap((xg[1] + xg[2]) / 2), "vref": snap(xg[3] + cg)}
+        self.x_vin = snap((self.x_out[1] + self.x_out[2]) / 2)                            # vin via
+        self.nx0 = snap(xg[2] + f[2].diff[0] - R_NWELL_PDIFF)
+        self.sup_x = {"vss": 0.0, "vref": snap(xg[3] + cg)}
         w_dev = max(self.sup_x["vref"] + (V1_M1[0] + M1_LINE) / 2 + R_M1_SP,   # vdd line on the edge (room for a via pad)
                     xg[3] + f[3].diff[1] + R_DIFF_SP / 2, xg[3] + f[3].poly[1] + R_POLY_SP / 2,
                     xg[3] + f[3].pad[1] + R_LI_SP / 2)
-
-        # MIM unit cap = SKY130 PDK PCell (C1 top contact over the capm, C2 bottom-plate strip on the right)
-        side = design["cu"]["side"]
-        self.unit = import_pcell(*mim_cap(side, side))
-        ub = self.unit.bbox
-        self.cap_x0, self.cap_x1, self.cap_y0, self.cap_y1 = ub[0][0], ub[1][0], ub[0][1], ub[1][1]
-        cm = _ext(self.unit, CAPM)
-        self.capm = cm
-        c1 = [p for p in self.unit.get_polygons(by_spec=MET4) if min(p[:, 0]) < cm[1]][0]   # C2 is right of the capm
-        self.c1_x0 = min(c1[:, 0])
-        # capm.11 against the mirrored neighbour on the vss edge (capm sides face each other), met3 spacing
-        # between the plates on the vdd edge (C2 sides face each other)
-        self.cap_cx = snap((CAPM11 - cm[0] - self.cap_x0) / 2 + 0.0025)
-        w_cap = self.cap_cx + self.cap_x1 + M3_SP / 2
         self.W = _ceil01(max(w_dev, w_cap))
         self.sup_x["vdd"] = self.W
-        self.riser_x = snap(self.cap_cx + (cm[1] + self.cap_x1) / 2)     # plate via2, beside the capm
-        assert self.riser_x - VIA / 2 - VIA2_CAPM >= self.cap_cx + cm[1]
 
-        # y: rails at CTRL_PITCH; the first rail on each side clears the plate pads / via2 at the plate bus
-        t_min = V1_M1[1] + R_M1_SP
-        s_lim = [(-(fe.bar_y[1] - MC / 2), -(fe.bar_y[0] + MC / 2)) for fe in f]   # device shift keeping P on the bar
-        tb = max([t_min] + [-fe.pad_y - s_lim[k][1] for k, fe in enumerate(f) if GATE_SIDE[k] == "bot"])
-        tt = max([t_min] + [fe.pad_y + s_lim[k][0] for k, fe in enumerate(f) if GATE_SIDE[k] == "top"])
-        self.shift = []
+        # y, relative to the plate bus (P = 0 here): sample rails below, vin + drive rails above
+        t_min = V1_M1[1] + R_M1_SP                          # rail via pads clear the plate pads
+        s_max = -(f[1].bar_y[0] + MC / 2)                   # Msn may move up while P stays on its bar
+        b0 = max(t_min, -f[1].pad_y - s_max)
+        self.shift = [0.0, max(0.0, -b0 - f[1].pad_y), 0.0, 0.0]   # Msn's gate contact meets the first rail
+        self.vin_dy = max(V1_M2[1] / 2 + R_M2_SP + V1_M2[1] / 2, M2_PAD / 2 + R_M2_SP + CTRL_W / 2)
+        bot = [-(b0 + k * CTRL_PITCH) for k in range(n_bot)]           # nearest first
+        top = [self.vin_dy + (k + 1) * CTRL_PITCH for k in range(n_top)]
+        for k in (0, 3):
+            assert f[k].pad_y + self.shift[k] <= top[0], "drive gate contact above the first drive rail"
+        # street: every capm.10 shape whose x-range meets the capm's must lie between two rows of caps
+        boxes = []
         for k, fe in enumerate(f):
-            if GATE_SIDE[k] == "bot":
-                self.shift.append(0.0 if -fe.pad_y <= tb else -tb - fe.pad_y)
-            else:
-                self.shift.append(0.0 if fe.pad_y <= tt else tt - fe.pad_y)
-        h_rails = tb + tt + (n_bot + n_top - 1) * CTRL_PITCH
+            boxes += [(xg[k] + b[0], xg[k] + b[1], self.shift[k] + b[2], self.shift[k] + b[3]) for b in fe.restricted]
+        pw = [(fe.diff[2] + self.shift[k], fe.diff[3] + self.shift[k]) for k, fe in ((2, f[2]), (3, f[3]))]
+        self.nw_y = (min(a for a, _ in pw) - R_NWELL_PDIFF, max(b for _, b in pw) + R_NWELL_PDIFF)
+        boxes.append((self.nx0, self.W, *self.nw_y))
+        hm = V1_M1[1] / 2
+        boxes += [(x - V1_M1[0] / 2, x + V1_M1[0] / 2, -hm, hm) for x in self.x_in]          # plate pads
+        boxes.append((xg[1] - V1_M1[0] / 2, xg[1] + V1_M1[0] / 2, bot[n_street - 1] - hm, hm))  # Msn gate stub
+        boxes.append((self.x_vin - V1_M1[0] / 2, self.x_vin + V1_M1[0] / 2, -hm, self.vin_dy + hm))
+        under = [b for b in boxes if b[1] > cl and b[0] < cr]
+        lo, hi = min(b[2] for b in under), max(b[3] for b in under)
+        cap_h = cm[3] - cm[2]
         h_cap = CAPM11 + max(self.cap_y1 - cm[2], cm[3] - self.cap_y0)            # capm.11 to the row above
-        self.H = _ceil01(max(h_rails, h_cap))
-        self.P = snap(tb + (n_bot - 0.5) * CTRL_PITCH + (self.H - h_rails) / 2)    # plate bus
-        P = self.P
+        h_street = hi - lo + cap_h
+        h_rails = top[-1] - bot[-1] + CTRL_PITCH
+        self.H = _ceil01(max(h_cap, h_street, h_rails))
+        self.P = P = snap(-bot[-1] + CTRL_PITCH / 2 + (self.H - h_rails) / 2)
         self.yc = [snap(P + s) for s in self.shift]                                # diffusion centres
-        self.bot_y = [snap(P - tb - (n_bot - 1 - i) * CTRL_PITCH) for i in range(n_bot)]   # bottom to top
-        self.top_y = [snap(P + tt + i * CTRL_PITCH) for i in range(n_top)]
+        self.bot_y = [snap(P + y) for y in reversed(bot)]                          # bottom to top
+        self.top_y = [snap(P + y) for y in top]
+        self.vin_y = snap(P + self.vin_dy)
         self.ctrl_y = self.bot_y + self.top_y
-        lim = self.cap_y1 - M3_PAD / 2                       # plate via2 must stay inside the plate
-        self.cap_cy = snap(min(max(self.H / 2, P - lim), P + lim))
+        self.street = (P + lo, P + hi)
+        # cap centred in the band between this street and the next row's
+        self.cap_cy = snap(P + hi + (self.H - (hi - lo) - cap_h) / 2 - cm[2])
+        self.nw_y = (P + self.nw_y[0], P + self.nw_y[1])
+        # plate: via2 + met3 riser from the plate bus up into the plate, beside the capm, clear (capm.11) of the
+        # capm of the row below
+        dy = (P - M3_PAD / 2) - (self.cap_cy + cm[3] - self.H)
+        dx = (CAPM11 ** 2 - dy ** 2) ** 0.5 if dy < CAPM11 else 0.0
+        self.riser_x = snap(max(cr + VIA2_CAPM + VIA / 2, cr + dx + M3_PAD / 2) + 0.005)   # grid margin
+        assert self.riser_x + M3_PAD / 2 <= self.cap_cx + self.cap_x1, "no room for the plate riser"
+        assert (P - M3_PAD / 2) - (self.cap_cy + self.cap_y1 - self.H) >= M3_SP, "riser too close to the plate below"
         self.tap = via_stack(sky130, "active_tap", "met2")
         tb_ = self.tap.bbox
         self.tap_half = max(abs(v) for v in (tb_[0][0], tb_[1][0], tb_[0][1], tb_[1][1]))
-        self.ptap_y, self.ntap_y = snap(P - TAP_DY), snap(P + TAP_DY)
+        self.ptap_y = self.ntap_y = self.cap_cy                  # beside the cap, on the cell edges
 
 
 def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
     """Draw one cell into component `top` at (x0, y0).  rails = (bottom rails, top rails), each listed bottom
-    to top.  Returns reference-netlist lines for LVS."""
-    from gdsfactory.components import rectangle
+    to top; the n_street bottom rails nearest the device row can serve Msn.  Returns reference-netlist lines."""
 
     from ..pdk import mos
     from .cell import model_name
 
-    W, P, f = plan.W, plan.P, plan.fets
+    W, H, P, f = plan.W, plan.H, plan.P, plan.fets
 
     def X(x):                       # local x -> layout x (mirrored about the cell centre)
         return x0 + (W - x if mirror else x)
@@ -196,10 +237,7 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
     def rect(xa, ya, xb, yb, layer):
         xa, xb = sorted((X(xa), X(xb)))
         ya, yb = y0 + min(ya, yb), y0 + max(ya, yb)
-        xa, ya, xb, yb = snap(xa), snap(ya), snap(xb), snap(yb)
-        if xb - xa > 0 and yb - ya > 0:
-            r = top << rectangle(size=(snap(xb - xa), snap(yb - ya)), layer=layer)
-            r.move((xa, ya))
+        _poly(top, xa, ya, xb, yb, layer)
 
     def box(x, y, w, h, layer):
         rect(x - w / 2, y - h / 2, x + w / 2, y + h / 2, layer)
@@ -231,45 +269,53 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
         else:
             assert dv.g in (bot if side == "bot" else topr), f"{dv.g} is not a {side} rail"
             y_r = rail_y[side][dv.g]
+            assert (y_r <= y_pad + 1e-6) if side == "bot" else (y_r >= y_pad - 1e-6), f"{dv.name}: rail {dv.g} unreachable"
+            if k == 1:
+                assert y_r >= plan.bot_y[plan.n_bot - plan.n_street] - 1e-6, f"{dv.g} is outside the street"
             rect(xg - MC / 2, min(y_pad, y_r) - MC / 2, xg + MC / 2, max(y_pad, y_r) + MC / 2, LI)
             via1(xg, y_r)
         # inner bar -> plate bus
         via1(plan.x_in[k], P)
         lines.append(mos(dv.name, dv.d, dv.g, dv.s, "vss" if dv.kind == "n" else "vdd", model_name(dv), dv.w, dv.l))
-    # outer bars -> supply lines (li stubs at the plate-bus height, mcon under the met1 line)
+    # outer bars -> supplies (li stubs at the plate-bus height): vss / vref lines (met1), vin rail (met2)
     xo, sx = plan.x_out, plan.sup_x
     rect(sx["vss"] - MC / 2, P - MC / 2, xo[0], P + MC / 2, LI)
     rect(xo[1], P - MC / 2, xo[2], P + MC / 2, LI)
+    rect(plan.x_vin - MC / 2, P, plan.x_vin + MC / 2, plan.vin_y + MC / 2, LI)
+    via1(plan.x_vin, plan.vin_y)
     rect(xo[3], P - MC / 2, sx["vref"] + MC / 2, P + MC / 2, LI)
-    for net in ("vss", "vin", "vref"):
+    for net in ("vss", "vref"):
         mcon(sx[net], P)
     for net, x in sx.items():
-        rect(x - M1_LINE / 2, 0, x + M1_LINE / 2, plan.H, MET1)
-    # plate bus (met2) through the inner bars, one via2 beside the capm into the PCell plate (met3)
+        rect(x - M1_LINE / 2, 0, x + M1_LINE / 2, H, MET1)
+    # plate bus (met2) through the inner bars, via2 + met3 riser beside the capm into the PCell plate
     xs = plan.x_in + [plan.riser_x]
     rect(min(xs) - V1_M2[0] / 2, P - V1_M2[1] / 2, max(xs) + M2_PAD / 2, P + V1_M2[1] / 2, MET2)
     box(plan.riser_x, P, M2_PAD, M2_PAD, MET2)
     box(plan.riser_x, P, VIA, VIA, VIA2)
-    box(plan.riser_x, P, M3_PAD, M3_PAD, MET3)
+    rect(plan.riser_x - M3_PAD / 2, P - M3_PAD / 2, plan.riser_x + M3_PAD / 2, plan.cap_cy + plan.cap_y0 + 0.2, MET3)
     capref = top << plan.unit
     if mirror:                      # the PDK PCell is asymmetric (C1 left, C2 strip right): mirror it too
         capref.mirror((0, 0), (0, 1))
     capref.move((snap(X(plan.cap_cx)), snap(y0 + plan.cap_cy)))
     side = design["cu"]["side"]
     lines.append(f"XC_{tag} top p_{tag} sky130_fd_pr__cap_mim_m3_1 W={side} L={side} MF=1")
-    # control rails edge to edge
+    # control rails and the vin rail, edge to edge
     for y in plan.ctrl_y:
         rect(0, y - CTRL_W / 2, W, y + CTRL_W / 2, MET2)
+    rect(0, plan.vin_y - CTRL_W / 2, W, plan.vin_y + CTRL_W / 2, MET2)
     # top plate (met4 only): C1 -> stub -> vertical strap on the vss edge
-    rect(-STRAP_W / 2, 0, STRAP_W / 2, plan.H, MET4)
+    rect(-STRAP_W / 2, 0, STRAP_W / 2, H, MET4)
     rect(0, plan.cap_cy - STUB_W / 2, plan.cap_cx + plan.c1_x0 + 0.2, plan.cap_cy + STUB_W / 2, MET4)
-    # body taps on the cell edges, under their supply lines (shared with the mirrored neighbour)
+    # body taps on the cell edges, beside the cap under their supply lines (shared with the mirrored neighbour)
     for tx, ty, imp in ((0.0, plan.ptap_y, PSDM), (W, plan.ntap_y, NSDM)):
         t = top << plan.tap
         t.move((snap(X(tx)), snap(y0 + ty)))
         box(tx, ty, 0.68, 0.68, imp)
-    # n-well: PMOS pair + n-tap, edge to edge vertically, past the PMOS edge (merges with the neighbour's)
-    rect(plan.nx0, 0, W + plan.tap_half + R_NWELL_PDIFF, plan.H, NWELL)
+    # n-well: the PMOS pair in the street, plus a column beside the cap (n-tap; continuous through the rows)
+    ex = W + plan.tap_half + R_NWELL_PDIFF
+    rect(plan.nx0, plan.nw_y[0], ex, plan.nw_y[1], NWELL)
+    rect(plan.capm_x[1], plan.nw_y[0], ex, plan.nw_y[0] + H, NWELL)
     # implants: bridge same-type neighbours (and the mirrored neighbours on the edges) closer than 0.38 um
     imp = [(plan.xg[k] + fe.imp[0], plan.xg[k] + fe.imp[1], plan.yc[k] + fe.imp[2], plan.yc[k] + fe.imp[3])
            for k, fe in enumerate(f)]
@@ -283,12 +329,17 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
     return lines
 
 
+def _poly(top, xa, ya, xb, yb, layer):
+    """Exact rectangle on the 5 nm grid (gdsfactory's rectangle() rounds its size to 2 grid steps)."""
+    xa, xb, ya, yb = snap(min(xa, xb)), snap(max(xa, xb)), snap(min(ya, yb)), snap(max(ya, yb))
+    if xb > xa and yb > ya:
+        top.add_polygon([(xa, ya), (xb, ya), (xb, yb), (xa, yb)], layer=layer)
+
+
 def _pin(top, net, x, y, layer, size=(0.3, 0.16)):
     """Pin shape + label centred at (x, y)."""
-    from gdsfactory.components import rectangle
     lbl, pin = (dict(LBL) | {MET1: (68, 5)})[layer], (dict(PIN) | {MET1: (68, 16)})[layer]
-    r = top << rectangle(size=size, layer=pin)
-    r.move((snap(x - size[0] / 2), snap(y - size[1] / 2)))
+    _poly(top, x - size[0] / 2, y - size[1] / 2, x + size[0] / 2, y + size[1] / 2, pin)
     top.add_label(text=net, position=(snap(x), snap(y)), layer=lbl)
 
 
@@ -296,13 +347,18 @@ def _subckt(name, pins, lines):
     return "\n".join([f".subckt {name} {' '.join(pins)}"] + lines + [f".ends {name}"]) + "\n"
 
 
+def _n_street(bot, gate_maps):
+    """How many sample rails, counted from the device row, Msn must reach (they must lie in the street)."""
+    return max([len(bot) - bot.index(g["en"]) for g in gate_maps if g["en"] in bot] or [1])
+
+
 def build_unit_cell(design, rails, gates, name="cdac_unit"):
     """A single unit cell (flattened), its reference netlist and pins.  rails = (bottom, top) rail names."""
     from gdsfactory import Component
-    plan = UnitCellPlan(design, len(rails[0]), len(rails[1]))
+    plan = UnitCellPlan(design, len(rails[0]), len(rails[1]), _n_street(rails[0], [gates]))
     top = Component(name + "_hier")
     lines = draw_cell(top, plan, 0.0, 0.0, False, rails, gates, "u", design)
-    for net, y in zip(rails[0] + rails[1], plan.ctrl_y):
+    for net, y in list(zip(rails[0] + rails[1], plan.ctrl_y)) + [("vin", plan.vin_y)]:
         _pin(top, net, 0.3, y, MET2, (0.3, CTRL_W))
     for net, x in plan.sup_x.items():
         _pin(top, net, x, plan.H - 0.3, MET1, (0.14, 0.3))
@@ -313,20 +369,60 @@ def build_unit_cell(design, rails, gates, name="cdac_unit"):
     return top, plan, _subckt(name, pins, lines)
 
 
+def _tie_supplies(rect, plan, cols, rows, vin_x):
+    """Test/array scaffolding: vertical supply lines -> met2 bars below the block; the rows' vin rails -> a
+    met1 trunk at vin_x left of the block -> the vin bar.  Returns {net: (x, y)} pin positions."""
+    W, H = plan.W, plan.H
+
+    def via(x, y):
+        rect(x - V1_M1[0] / 2, y - V1_M1[1] / 2, x + V1_M1[0] / 2, y + V1_M1[1] / 2, MET1)
+        rect(x - V1 / 2, y - V1 / 2, x + V1 / 2, y + V1 / 2, VIA1)
+        rect(x - V1_M2[0] / 2, y - V1_M2[1] / 2, x + V1_M2[0] / 2, y + V1_M2[1] / 2, MET2)
+
+    pins = {}
+    for i, net in enumerate(SUPPLY):
+        yb = -0.6 - i * 0.8
+        if net == "vin":
+            xs = [vin_x]
+            ys = [r * H + plan.vin_y for r in range(rows)]
+            for y in ys:
+                rect(vin_x, y - CTRL_W / 2, 0, y + CTRL_W / 2, MET2)
+                via(vin_x, y)
+            rect(vin_x - V1_M1[0] / 2, yb, vin_x + V1_M1[0] / 2, max(ys), MET1)
+        else:
+            xs = sorted({snap(c * W + (W - plan.sup_x[net] if c % 2 else plan.sup_x[net])) for c in range(cols)})
+            for x in xs:
+                rect(x - M1_LINE / 2, yb, x + M1_LINE / 2, 0, MET1)
+        for x in xs:
+            via(x, yb)
+        rect(xs[0] - V1_M2[0] / 2, yb - 0.2, xs[-1] + V1_M2[0] / 2, yb + 0.2, MET2)
+        pins[net] = (xs[0], yb)
+    return pins
+
+
+def _top_bar(rect, plan, cols):
+    """Top-plate straps -> met4 bar below the block, where the nearest caps (bottom row) are > 1.5 um away;
+    above the top row the bar would add ~0.2 fF of top-to-bottom-plate fringe to those units only."""
+    W = plan.W
+    xs = sorted({snap(c * W + (W if c % 2 else 0)) for c in range(cols)})
+    yb = -TOP_BAR_GAP - STRAP_W
+    for x in xs:
+        rect(x - STRAP_W / 2, yb, x + STRAP_W / 2, 0, MET4)
+    rect(xs[0] - STRAP_W / 2, yb, xs[-1] + STRAP_W / 2, yb + STRAP_W, MET4)
+
+
 def build_abut_test(design, rails, gate_maps, cols=3, rows=2, name="cdac_unit_2x3"):
     """rows x cols abutted cells (mirrored alternate columns) to prove the cell tiles DRC/LVS-clean.
 
-    Every row gets its own control-rail names; supply lines are tied below the array by met2 bars and the
-    top-plate straps above it by a met4 bar, so the whole block is one LVS-checkable circuit."""
+    Every row gets its own control-rail names; supplies are tied below the block and the top-plate straps
+    above it by a met4 bar, so the whole block is one LVS-checkable circuit."""
     from gdsfactory import Component
-    from gdsfactory.components import rectangle
-    plan = UnitCellPlan(design, len(rails[0]), len(rails[1]))
+    plan = UnitCellPlan(design, len(rails[0]), len(rails[1]), _n_street(rails[0], gate_maps))
     W, H = plan.W, plan.H
     top = Component(name + "_hier")
 
     def rect(xa, ya, xb, yb, layer):
-        r = top << rectangle(size=(snap(xb - xa), snap(yb - ya)), layer=layer)
-        r.move((snap(xa), snap(ya)))
+        _poly(top, xa, ya, xb, yb, layer)
 
     lines, all_rails = [], []
     k = 0
@@ -339,24 +435,11 @@ def build_abut_test(design, rails, gate_maps, cols=3, rows=2, name="cdac_unit_2x
             lines += draw_cell(top, plan, c * W, r * H, c % 2 == 1, row_rails, g, f"{r}_{c}", design)
             k += 1
         for net, y in zip(row_rails[0] + row_rails[1], plan.ctrl_y):
-            _pin(top, net, 0.3, r * H + y, MET2, (0.3, CTRL_W))
-    # supply lines -> met2 bars below the array
-    for i, net in enumerate(SUPPLY):
-        yb = -0.5 - i * 0.45
-        xs = sorted({snap(c * W + (W - plan.sup_x[net] if c % 2 else plan.sup_x[net])) for c in range(cols)})
-        for x in xs:
-            rect(x - M1_LINE / 2, yb - V1_M1[1] / 2, x + M1_LINE / 2, 0, MET1)
-            rect(x - V1_M1[0] / 2, yb - V1_M1[1] / 2, x + V1_M1[0] / 2, yb + V1_M1[1] / 2, MET1)
-            rect(x - V1 / 2, yb - V1 / 2, x + V1 / 2, yb + V1 / 2, VIA1)
-        rect(xs[0] - V1_M2[0] / 2, yb - V1_M2[1] / 2, xs[-1] + V1_M2[0] / 2, yb + V1_M2[1] / 2, MET2)
-        _pin(top, net, xs[0], yb, MET2, (0.3, 0.16))
-    # top-plate straps -> met4 bar above the array
-    xs = sorted({snap(c * W + (W if c % 2 else 0)) for c in range(cols)})
-    yt = rows * H + 0.5
-    for x in xs:
-        rect(x - STRAP_W / 2, rows * H, x + STRAP_W / 2, yt + STRAP_W, MET4)
-    rect(xs[0] - STRAP_W / 2, yt, xs[-1] + STRAP_W / 2, yt + STRAP_W, MET4)
-    _pin(top, "top", xs[0], yt + STRAP_W / 2, MET4)
+            _pin(top, net, W - 0.3, r * H + y, MET2, (0.3, CTRL_W))
+    for net, (x, y) in _tie_supplies(rect, plan, cols, rows, -(max(plan.tap_half + R_M1_SP, STRAP_W / 2 + TRUNK_STRAP) + V1_M1[0] / 2)).items():
+        _pin(top, net, x, y, MET2)
+    _top_bar(rect, plan, cols)
+    _pin(top, "top", 0.0, -TOP_BAR_GAP - STRAP_W / 2, MET4)
     top = top.flatten()
     top.name = name
     pins = ["top"] + SUPPLY + all_rails
@@ -410,27 +493,25 @@ def build_unit_array(design, bits, name=None, grid=None):
     left and bit controls on the right; the vertical supply lines are tied by met2 bars below the array
     and the top-plate straps by a met4 bar above it.  Returns (Component, info, reference netlist)."""
     from gdsfactory import Component
-    from gdsfactory.components import rectangle
 
     grid = grid or rowwise_grid(bits)
     R, C = len(grid), len(grid[0])
     gates = [[unit_gates(g, bits) for g in row] for row in grid]
     bot_rows, top_rows = [], []
-    for row in gates:
-        bot_rows.append([n for n in PHASES if any(n in (g["en"], g["enb"]) for g in row)])
+    for row in gates:                         # bottom to top: complements first, Msn's phase next to the devices
+        bot_rows.append([n for n in ("phisb", "phigb", "phis", "phig") if any(n in (g["en"], g["enb"]) for g in row)])
         tops = dict.fromkeys(n for g in row for n in (g["ng"], g["pg"]) if n not in SUPPLY)
         top_rows.append(sorted(tops, key=lambda n: (n not in PHASES, n.split("_")[-1], n)))
     n_bot, n_top = max(map(len, bot_rows)), max(map(len, top_rows))
-    plan = UnitCellPlan(design, n_bot, n_top)
+    n_street = max(_n_street(b, row) for b, row in zip(bot_rows, gates))
+    plan = UnitCellPlan(design, n_bot, n_top, n_street)
     W, H = plan.W, plan.H
-    Wa, Ha = C * W, R * H
+    Wa = C * W
     name = name or f"cdacu{bits}b"
     top = Component(name + "_hier")
 
     def rect(xa, ya, xb, yb, layer):
-        xa, xb, ya, yb = snap(min(xa, xb)), snap(max(xa, xb)), snap(min(ya, yb)), snap(max(ya, yb))
-        r = top << rectangle(size=(snap(xb - xa), snap(yb - ya)), layer=layer)
-        r.move((xa, ya))
+        _poly(top, xa, ya, xb, yb, layer)
 
     def via1(x, y):
         rect(x - V1_M1[0] / 2, y - V1_M1[1] / 2, x + V1_M1[0] / 2, y + V1_M1[1] / 2, MET1)
@@ -440,7 +521,7 @@ def build_unit_array(design, bits, name=None, grid=None):
     lines, rail_pos = [], []                      # rail_pos: (net, y) of every used rail
     for r in range(R):
         y0 = (R - 1 - r) * H
-        bot = bot_rows[r] + [None] * (n_bot - len(bot_rows[r]))
+        bot = [None] * (n_bot - len(bot_rows[r])) + bot_rows[r]
         tops = top_rows[r] + [None] * (n_top - len(top_rows[r]))
         names = [n or f"_nc{r}_{i}" for i, n in enumerate(bot + tops)]
         for c in range(C):
@@ -463,11 +544,12 @@ def build_unit_array(design, bits, name=None, grid=None):
                     lo = ty
             rect(-V1_M1[0] / 2, lo, V1_M1[0] / 2, hi, MET1)
 
-    # control trunks (met1): phases on the left, bit controls on the right
+    rail_pos += [("vin", (R - 1 - r) * H + plan.vin_y) for r in range(R)]
+    # trunks (met1): vin and phases on the left, bit controls on the right
     nets = list(dict.fromkeys(n for n, _ in rail_pos))
-    left = [n for n in PHASES if n in nets]
+    left = ["vin"] + [n for n in PHASES if n in nets]
     right = sorted((n for n in nets if n not in left), key=lambda n: (n.split("_")[-1], n))
-    edge = plan.tap_half + R_M1_SP + TRUNK_W / 2            # clear of the vss line / p-tap on the edge
+    edge = max(plan.tap_half + R_M1_SP, STRAP_W / 2 + TRUNK_STRAP) + TRUNK_W / 2   # clear of p-tap and strap
     tx = {n: snap(-edge - i * TRUNK_PITCH) for i, n in enumerate(left)}
     tx.update({n: snap(Wa + edge + i * TRUNK_PITCH) for i, n in enumerate(right)})
     for n, y in rail_pos:
@@ -479,8 +561,8 @@ def build_unit_array(design, bits, name=None, grid=None):
         lo, hi = min(ys) - V1_M1[1] / 2, max(ys) + V1_M1[1] / 2
         rect(tx[n] - TRUNK_W / 2, lo, tx[n] + TRUNK_W / 2, hi, MET1)
         _pin(top, n, tx[n], hi - 0.2, MET1, (0.14, 0.3))
-    # supply lines -> met2 bars below the array
-    for i, net in enumerate(SUPPLY):
+    # vertical supply lines -> met2 bars below the array
+    for i, net in enumerate(LINES):
         yb = -0.6 - i * SUP_BAR_PITCH
         xs = sorted({snap(c * W + (W - plan.sup_x[net] if c % 2 else plan.sup_x[net])) for c in range(C)})
         for x in xs:
@@ -488,17 +570,12 @@ def build_unit_array(design, bits, name=None, grid=None):
             via1(x, yb)
         rect(xs[0] - V1_M2[0] / 2, yb - SUP_BAR_W / 2, xs[-1] + V1_M2[0] / 2, yb + SUP_BAR_W / 2, MET2)
         _pin(top, net, xs[0] + 0.2, yb, MET2)
-    # top-plate straps -> met4 bar above the array
-    xs = sorted({snap(c * W + (W if c % 2 else 0)) for c in range(C)})
-    yt = Ha + 0.5
-    for x in xs:
-        rect(x - STRAP_W / 2, Ha, x + STRAP_W / 2, yt + STRAP_W, MET4)
-    rect(xs[0] - STRAP_W / 2, yt, xs[-1] + STRAP_W / 2, yt + STRAP_W, MET4)
-    _pin(top, "top", xs[0], yt + STRAP_W / 2, MET4)
+    _top_bar(rect, plan, C)
+    _pin(top, "top", 0.0, -TOP_BAR_GAP - STRAP_W / 2, MET4)
 
     top = top.flatten()
     top.name = name
-    pins = ["top"] + SUPPLY + left + right
+    pins = ["top"] + LINES + left + right
     bb = top.bbox
     info = dict(bits=bits, grid=grid, cell=(W, H), rails_bot=bot_rows, rails_top=top_rows,
                 ctrl_rails=n_bot + n_top, width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),

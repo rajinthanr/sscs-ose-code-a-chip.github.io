@@ -41,13 +41,20 @@ def drc_klayout(gds, outdir) -> dict:
     _run(["klayout", "-b", "-r", str(TECH / "klayout/drc/sky130A_mr.drc"), "-rd", f"input={gds}",
           "-rd", f"report={rpt}", "-rd", "feol=true", "-rd", "beol=true", "-rd", "offgrid=true",
           "-rd", "floating_met=false", "-rd", "seal=false"])
-    txt = rpt.read_text() if rpt.exists() else ""
-    cats = [re.search(r"<category>'?([^<']*)", it).group(1)
-            for it in re.findall(r"<item>(.*?)</item>", txt, re.S)]
+    # capm.10 (nothing but met2 and above under a MIM cap) is a written rule the deck above does not check
+    rpt10 = outdir / f"{gds.stem}_capm10.lyrdb"
+    _run(["klayout", "-b", "-r", str(Path(__file__).with_name("capm10.drc")), "-rd", f"input={gds}",
+          "-rd", f"report={rpt10}"])
+    cats = []
+    for f in (rpt, rpt10):
+        txt = f.read_text() if f.exists() else ""
+        cats += [re.search(r"<category>'?([^<']*)", it).group(1)
+                 for it in re.findall(r"<item>(.*?)</item>", txt, re.S)]
     rules = {}
     for c in cats:
         rules[c] = rules.get(c, 0) + 1
-    return dict(total=len(cats) if rpt.exists() else -1, rules=rules, report=str(rpt), ran=rpt.exists())
+    ran = rpt.exists() and rpt10.exists()
+    return dict(total=len(cats) if ran else -1, rules=rules, report=str(rpt), ran=ran)
 
 
 def drc_magic(gds, cell, outdir) -> dict:
