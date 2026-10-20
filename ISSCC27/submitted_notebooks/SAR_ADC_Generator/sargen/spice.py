@@ -18,8 +18,12 @@ def run(netlist: str, workdir: Path, seed: int | None = None, timeout: float = 7
     """Run `netlist` in its own folder `workdir`; returns the folder."""
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    init = SPICEINIT + (f"set rndseed={seed}\n" if seed is not None else "")
-    (workdir / ".spiceinit").write_text(init)
+    (workdir / ".spiceinit").write_text(SPICEINIT)
+    if seed is not None:
+        # `.option seed` makes the mismatch draws reproducible across processes
+        # (`set rndseed` in .spiceinit does not: verified with ngspice-47)
+        title, rest = netlist.split("\n", 1)
+        netlist = f"{title}\n.option seed={seed}\n{rest}"
     (workdir / "tb.cir").write_text(netlist)
     r = subprocess.run(["ngspice", "-b", "tb.cir"], cwd=workdir, capture_output=True,
                        text=True, timeout=timeout)

@@ -25,7 +25,7 @@ def _codes_from_wave(w, tim, n_conv, bits, vdd):
 
 
 def simulate_codes(spec, design, kind, n_total, workdir, chunk=32, *, ramp=None, sine=None,
-                   mismatch=False, seed=None, cp_top=0.0):
+                   mismatch=False, seed=None, cp_top=0.0, **tb_kw):
     """Simulate `n_total` conversions split into parallel chunks.
 
     kind = "ramp": ramp=(v_start, dv)   -> sample g gets v_start + g*dv
@@ -48,7 +48,7 @@ def simulate_codes(spec, design, kind, n_total, workdir, chunk=32, *, ramp=None,
             line = f"Vin vin 0 SIN({spec.vcm} {amp:.9g} {f:.9g} 0 0 {ph:.9g})"
         else:
             raise ValueError(kind)
-        jobs.append(dict(netlist=nl.sar_testbench(spec, design, line, n, mismatch=mismatch, cp_top=cp_top),
+        jobs.append(dict(netlist=nl.sar_testbench(spec, design, line, n, mismatch=mismatch, cp_top=cp_top, **tb_kw),
                          workdir=Path(workdir) / f"chunk_{j:03d}", seed=seed))
         spans.append((k0, n))
     dirs = run_many(jobs)

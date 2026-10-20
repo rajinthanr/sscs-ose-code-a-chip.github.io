@@ -53,8 +53,14 @@ def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
 
 
 # ---------------------------------------------------------------- SAR core
-def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
-    """CDAC + switches + comparator (transistor level)."""
+def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None) -> str:
+    """CDAC + switches + comparator (transistor level).
+
+    cap_values: optional list of 2^N ideal capacitances (bit-major, dummy last) replacing the MIM
+    devices - used to separate capacitor mismatch from transistor mismatch in Monte-Carlo studies."""
+    caps = iter(cap_values) if cap_values is not None else None
+    def cap(name, top, bot):
+        return f"C{name} {top} {bot} {next(caps):.6g}" if caps else mim(name, top, bot, cu["side"], cu["side"])
     cu, sw, drv, L = design["cu"], design["sw"], design["drv"], design["l_sw"]
     out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm",
            "* ---- top-plate sampling switch (to vcm)"]
@@ -64,7 +70,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
         for u in range(m):
-            out.append(mim(f"C{i}_{u}", "top", f"bot_{i}", cu["side"], cu["side"]))
+            out.append(cap(f"{i}_{u}", "top", f"bot_{i}"))
         # MSB stops tracking at phis and goes to Vref; the other plates keep tracking Vin until phig,
         # so the top plate moves to Vcm + (Vref - Vin)/2 first and never leaves [0, Vref]
         en, enb = ("phis", "phisb") if i == bits - 1 else ("phig", "phigb")
@@ -72,7 +78,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0) -> str:
         out.append(mos(f"Mdp{i}", f"bot_{i}", f"pg_{i}", "vref", "vdd", PFET, drv["wp"], L, m))
         out.append(mos(f"Mdn{i}", f"bot_{i}", f"ng_{i}", "0", "0", NFET, drv["wn"], L, m))
     out.append("* ---- dummy (termination) unit cap: samples vin, then grounded")
-    out.append(mim("Cd", "top", "botd", cu["side"], cu["side"]))
+    out.append(cap("d", "top", "botd"))
     out += tg_lines("Msd", "botd", "vin", "phig", "phigb", sw["in_wn"], sw["in_wp"], fl)
     out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
     if cp_top > 0:
@@ -195,7 +201,7 @@ class Timing:
 
 
 def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=False,
-                  cp_top=0.0, save=None, power=True, logic="cells") -> str:
+                  cp_top=0.0, save=None, power=True, logic="cells", cap_values=None) -> str:
     """Full transient testbench with `n_conv` conversions (+1 leading dummy conversion)."""
     tim = Timing(spec.bits, spec.tclk)
     tstop = (n_conv + 1) * tim.tconv
@@ -218,7 +224,7 @@ Vref vref 0 {spec.vref}
 Vcm vcm 0 {spec.vcm}
 {vin_line}
 {tim.sources(spec.vdd)}
-{sar_core(design, spec.bits, cp_top)}
+{sar_core(design, spec.bits, cp_top, cap_values)}
 {sar_logic_cells(spec.bits) if logic == "cells" else sar_logic(spec.bits, spec.vdd)}
 .save {' '.join(save)} i(vdd) i(vref) i(vcm)
 .tran {spec.tclk / 100:.4g} {tstop:.6g} 0 {spec.tclk / 25:.4g}
