@@ -146,6 +146,19 @@ def do_sarlogic(bits, out):
     return gds, ref, "sar_logic", info
 
 
+def do_core(bits, out):
+    from sargen.layout import core
+    t0 = time.time()
+    comp, info = core.build_core(bits, out)
+    gds = out / f"{comp.name}.gds"
+    comp.write_gds(gds)
+    ref = out / f"{comp.name}_ref.spice"
+    ref.write_text(core.reference(bits, out))
+    info["gen_s"] = time.time() - t0
+    print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.1f} x {info['height']:.1f} um")
+    return gds, ref, comp.name, info
+
+
 def do_cdacu(bits, out):
     from sargen.layout import unitcell
     design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
@@ -165,7 +178,7 @@ def do_cdacu(bits, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw", "sarlogic"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw", "sarlogic", "core"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--rows", type=int, default=2, help="unitabut: rows of abutted unit cells")
     ap.add_argument("--cols", type=int, default=3, help="unitabut: columns (alternate columns mirrored)")
@@ -177,7 +190,7 @@ def main():
                             "cdacsw": do_cdacsw, "unitcell": do_unit,
                             "unitabut": lambda b, o: do_unit(b, o, a.rows, a.cols),
                             "cdacu": do_cdacu, "topsw": do_topsw,
-                            "sarlogic": do_sarlogic}[a.block](a.bits, out)
+                            "sarlogic": do_sarlogic, "core": do_core}[a.block](a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")
