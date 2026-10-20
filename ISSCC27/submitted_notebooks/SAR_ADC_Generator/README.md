@@ -28,6 +28,21 @@ python3 collect_results.py              # copy small result files to results/ (s
 jupyter lab SAR_ADC_Generator.ipynb
 ```
 
+### Layout (same container, gLayout environment from `layout/setup_env.sh`)
+
+```bash
+bash layout/setup_env.sh                     # once: pinned gLayout venv (gdsfactory 7.7)
+unset PYTHONPATH; . /foss/designs/.venvs/sargen-glayout/bin/activate
+export PDK=sky130A PDK_ROOT=/foss/pdks PYTHONPATH=$PWD
+for b in unitcell cdacu comparator topsw sarlogic; do python run_layout.py $b --bits 4; done
+python run_layout.py cdacu --bits 4 --pex; python run_layout.py comparator --bits 4 --pex
+python run_layout.py core --bits 4 --pex     # routed core: DRC (KLayout + capm.10, Magic), LVS (Netgen), PEX
+python collect_layout.py 4                   # signoff table + images -> results/4bit/layout/
+python run_postlayout.py --bits 4            # same testbench with the extracted blocks / full extracted core
+```
+
+Each block is closed at DRC 0 / LVS match before the next is built; `--bits 6` runs the same generators.
+
 **Google Colab:** the first code cell of the notebook installs ngspice (conda-forge) and the SKY130 PDK
 (`ciel`, pinned version) in about 8 minutes; tested on a clean Ubuntu 22.04 image.
 
@@ -43,6 +58,8 @@ jupyter lab SAR_ADC_Generator.ipynb
 | measure | `sargen/metrics.py` | DNL/INL (code density and transition levels), SNDR/SFDR/THD/ENOB, Walden FoM |
 | explain | `sargen/model.py`, `sargen/anim.py` | behavioral model (PDK-calibrated MC) and animated binary search |
 | verify | `sargen/sweep.py` | PVT, input-frequency and sample-rate sweeps of a fixed design, comparator delay, SPICE vs behavioral MC |
+| layout | `sargen/layout/` | PDK PCells placed and routed by code: CDAC unit cell + common-centroid array with dummy ring (`unitcell.py`), StrongARM (`strongarm.py`), top-plate switch (`topswitch.py`), SAR logic via LibreLane (`sarlogic.py`), routed core (`core.py`) |
+| signoff | `sargen/layout/verify.py` | KLayout DRC + capm.10 deck, Magic DRC, Netgen LVS, Magic PEX, PNG render |
 
 ## Architecture (current)
 
@@ -52,7 +69,7 @@ inside the supply rails; StrongARM comparator against Vcm = Vref/2; synchronous 
 Input range 0..Vref.
 
 Idealizations (stated in the results): clock-phase generation, Vref and Vcm are ideal sources; comparator
-noise is not simulated; no layout parasitics yet.
+noise is not simulated; extraction is capacitance only (no wiring resistance).
 
 ## Roadmap
 
@@ -60,7 +77,10 @@ noise is not simulated; no layout parasitics yet.
 - [x] layout generators from SKY130 PDK PCells: CDAC unit cell with its own switches, 3-8 bit common-centroid
       CDAC arrays, compact StrongARM comparator (findings: [docs/layout_findings.md](docs/layout_findings.md))
 - [x] DRC/LVS (KLayout incl. capm.10, Magic, Netgen) and PEX, post-layout re-simulation
-- [ ] SAR logic layout, top-level assembly, TinyTapeout pins
+- [x] top-plate switch, SAR logic (LibreLane), routed 4- and 6-bit cores, DRC 0 / LVS match; full-core
+      post-layout simulation (4 bit: ENOB 3.98, DNL 0.04 LSB)
+- [ ] top-plate switch sizing that holds at hot and cold corners (see `studies/top_switch_leakage.py`)
+- [ ] TinyTapeout tile integration (pins, analog ground, Vref decoupling)
 - [x] 4..8-bit scaling (ENOB / power / capacitance / FoM trends)
 - [x] robustness: PVT, input frequency, sample rate, comparator delay, transistor-level mismatch runs
 - [x] Colab install path

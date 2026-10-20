@@ -24,28 +24,31 @@ def main():
     design = json.loads((base / "design.json").read_text())
     spec = SarSpec(bits=a.bits)
     pex_dir = base / "layout" / "pex"
-    cdac = dict(cdac_lines=nl.load_cdac_extraction(pex_dir / f"cdac{a.bits}b_pex.spice", a.bits))
-    cmp_ = dict(cmp_subckt=nl.load_strongarm_extraction(pex_dir / "strongarm_pex.spice"))
-    sw = dict(sw_subckt=nl.wrap_extraction(pex_dir / "switches_pex.spice", "switches", nl.switch_pins(a.bits)))
     lay = base / "layout"
-    cdacsw = {}
-    if (pex_dir / f"cdacsw{a.bits}b_pex.spice").exists():
+    have = lambda cell: (pex_dir / f"{cell}_pex.spice").exists()   # a case runs only if its extractions exist
+    cdac = dict(cdac_lines=nl.load_cdac_extraction(pex_dir / f"cdac{a.bits}b_pex.spice", a.bits)) if have(f"cdac{a.bits}b") else None
+    cmp_ = dict(cmp_subckt=nl.load_strongarm_extraction(pex_dir / "strongarm_pex.spice")) if have("strongarm") else None
+    sw = dict(sw_subckt=nl.wrap_extraction(pex_dir / "switches_pex.spice", "switches", nl.switch_pins(a.bits))) if have("switches") else None
+    cdacsw = cdacu = core = None
+    if have(f"cdacsw{a.bits}b"):
         pins = nl.subckt_pins(lay / f"cdacsw{a.bits}b_ref.spice", f"cdacsw{a.bits}b")
         cdacsw = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacsw{a.bits}b_pex.spice", "cdacsw", pins), pins))
-    cdacu = {}
-    if (pex_dir / f"cdacu{a.bits}b_pex.spice").exists():
+    if have(f"cdacu{a.bits}b"):
         pins = nl.subckt_pins(lay / f"cdacu{a.bits}b_ref.spice", f"cdacu{a.bits}b")
         cdacu = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacu{a.bits}b_pex.spice", "cdacsw", pins), pins))
-    core = {}
-    if (pex_dir / f"sar{a.bits}b_core_pex.spice").exists():
+    if have(f"sar{a.bits}b_core"):
         cname = f"sar{a.bits}b_core"
         from sargen.layout.core import core_pins            # flat extraction, ports from the pin labels
         pins = core_pins(a.bits)
         core = dict(core=(nl.wrap_extraction(pex_dir / f"{cname}_pex.spice", cname, pins), pins, cname))
+
+    def both(*parts):
+        return None if any(x is None for x in parts) else {k: v for x in parts for k, v in x.items()}
     cases = [("schematic", {}), ("full core from layout", core), ("extracted CDAC", cdac), ("extracted comparator", cmp_),
-             ("unit-cell CDAC", cdacu), ("unit-cell CDAC + comparator", {**cdacu, **cmp_}),
-             ("compact CDAC+switches", cdacsw), ("compact CDAC+switches + comparator", {**cdacsw, **cmp_}),
-             ("extracted switches", sw), ("all blocks extracted", {**cdac, **cmp_, **sw})]
+             ("unit-cell CDAC", cdacu), ("unit-cell CDAC + comparator", both(cdacu, cmp_)),
+             ("compact CDAC+switches", cdacsw), ("compact CDAC+switches + comparator", both(cdacsw, cmp_)),
+             ("extracted switches", sw), ("all blocks extracted", both(cdac, cmp_, sw))]
+    cases = [c for c in cases if c[1] is not None]
     if a.only:
         cases = [c for c in cases if c[0] in a.only]
     out = base / "postlayout"

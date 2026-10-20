@@ -183,6 +183,7 @@ def main():
     ap.add_argument("--rows", type=int, default=2, help="unitabut: rows of abutted unit cells")
     ap.add_argument("--cols", type=int, default=3, help="unitabut: columns (alternate columns mirrored)")
     ap.add_argument("--no-verify", action="store_true")
+    ap.add_argument("--pex", action="store_true", help="also extract parasitic C to layout/pex/<cell>_pex.spice")
     a = ap.parse_args()
     out = Path(f"build/{a.bits}bit/layout")
     out.mkdir(parents=True, exist_ok=True)
@@ -201,6 +202,9 @@ def main():
         print(f"DRC magic   {info['drc_magic']['total']} {info['drc_magic']['rules']}")
         print(f"LVS {'MATCH' if info['lvs']['match'] else 'FAIL'} devices {info['lvs']['devices']} "
               f"{info['lvs']['summary']}  ({time.time() - t:.0f} s)")
+    if a.pex:
+        info["pex"] = str(verify.extract(gds, cell, out / "pex", parasitics=True))
+        print(f"PEX {info['pex']}")
     (out / f"{cell}.json").write_text(json.dumps(info, indent=1, default=str))
 
 

@@ -29,7 +29,7 @@ def main(n=4):
         lvs = d.get("lvs", {})
         md.append(f"| {label} | {w:.2f} x {h:.2f} | {w * h:.0f} | {d.get('drc_klayout', {}).get('total', '-')} | "
                   f"{d.get('drc_magic', {}).get('total', '-')} | "
-                  f"{'match' if lvs.get('match') else 'FAIL'} ({'/'.join(lvs.get('devices', []))} devices) |")
+                  f"{'match' if lvs.get('match') else 'FAIL'} ({'/'.join(lvs.get('devices', []))} {'block instances' if cell.endswith('_core') else 'devices'}) |")
         for ext in (".png", ".gds"):
             if (src / f"{cell}{ext}").exists():
                 shutil.copy2(src / f"{cell}{ext}", dst / f"{cell}{ext}")

@@ -7,7 +7,8 @@ unset PYTHONPATH        # the IIC-OSIC-TOOLS PYTHONPATH carries a newer gdsfacto
 VENV=${1:-${SARGEN_LAYOUT_VENV:-/foss/designs/.venvs/sargen-glayout}}
 HERE=$(cd "$(dirname "$0")" && pwd)
 if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c "import glayout" 2>/dev/null; then
-    echo "gLayout environment ready: $VENV"; exit 0
+    echo "gLayout environment ready: $VENV"
+    echo "activate: unset PYTHONPATH; . $VENV/bin/activate; export PDK=sky130A PDK_ROOT=/foss/pdks PYTHONPATH=\$PWD"; exit 0
 fi
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q --upgrade pip
@@ -15,3 +16,4 @@ python3 -m venv "$VENV"
 "$VENV/bin/pip" install -q --no-deps -r "$HERE/requirements-glayout.txt"
 "$VENV/bin/python" -c "import glayout, gdsfactory; print('glayout ok, gdsfactory', gdsfactory.__version__)"
 echo "gLayout environment ready: $VENV"
+echo "activate: unset PYTHONPATH; . $VENV/bin/activate; export PDK=sky130A PDK_ROOT=/foss/pdks PYTHONPATH=\$PWD"
