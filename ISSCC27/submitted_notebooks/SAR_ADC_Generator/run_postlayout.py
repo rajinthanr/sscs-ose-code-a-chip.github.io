@@ -37,10 +37,8 @@ def main():
         pins = nl.subckt_pins(lay / f"cdacu{a.bits}b_ref.spice", f"cdacu{a.bits}b")
         cdacu = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacu{a.bits}b_pex.spice", "cdacsw", pins), pins))
     if have(f"sar{a.bits}b_core"):
-        cname = f"sar{a.bits}b_core"
-        from sargen.layout.core import core_pins            # flat extraction, ports from the pin labels
-        pins = core_pins(a.bits)
-        core = dict(core=(nl.wrap_extraction(pex_dir / f"{cname}_pex.spice", cname, pins), pins, cname))
+        from sargen.layout import core as core_layout
+        core = core_layout.extracted(a.bits, lay)
 
     def both(*parts):
         return None if any(x is None for x in parts) else {k: v for x in parts for k, v in x.items()}

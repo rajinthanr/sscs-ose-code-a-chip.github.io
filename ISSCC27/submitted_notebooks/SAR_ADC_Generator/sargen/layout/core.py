@@ -246,6 +246,17 @@ def core_pins(bits):
             + [f"bo_{i}" for i in range(bits)])
 
 
+def extracted(bits, layout_dir):
+    """evaluate() keyword for the extracted core (flat Magic PEX, ports from the pin labels), or None."""
+    from .. import netlist as nl
+    name = f"sar{bits}b_core"
+    pex = Path(layout_dir) / "pex" / f"{name}_pex.spice"
+    if not pex.exists():
+        return None
+    pins = core_pins(bits)
+    return dict(core=(nl.wrap_extraction(pex, name, pins), pins, name))
+
+
 def reference(bits, layout_dir, name=None):
     """LVS reference: the blocks' references and the core netlist that connects them."""
     L = Path(layout_dir)
