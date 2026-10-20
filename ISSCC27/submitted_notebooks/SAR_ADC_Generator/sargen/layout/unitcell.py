@@ -63,6 +63,12 @@ def _ext(comp, layer):
     return min(p[0] for p in pts), max(p[0] for p in pts), min(p[1] for p in pts), max(p[1] for p in pts)
 
 
+def _ceil01(v):
+    """Round a cell pitch up to 0.01 um, so every multiple and half of it stays on the 5 nm grid."""
+    import math
+    return round(math.ceil(round(v, 6) * 100 - 1e-6) / 100, 2)
+
+
 class _Fet:
     """A FET PCell and the geometry the cell is packed from: x from the gate centre, y from the diffusion
     centre (the PCell is symmetric in x, so it is never mirrored)."""
@@ -141,7 +147,7 @@ class UnitCellPlan:
         # between the plates on the vdd edge (C2 sides face each other)
         self.cap_cx = snap((CAPM11 - cm[0] - self.cap_x0) / 2 + 0.0025)
         w_cap = self.cap_cx + self.cap_x1 + M3_SP / 2
-        self.W = snap(max(w_dev, w_cap) + 0.0025)
+        self.W = _ceil01(max(w_dev, w_cap))
         self.sup_x["vdd"] = self.W
         self.riser_x = snap(self.cap_cx + (cm[1] + self.cap_x1) / 2)     # plate via2, beside the capm
         assert self.riser_x - VIA / 2 - VIA2_CAPM >= self.cap_cx + cm[1]
@@ -159,14 +165,15 @@ class UnitCellPlan:
                 self.shift.append(0.0 if fe.pad_y <= tt else tt - fe.pad_y)
         h_rails = tb + tt + (n_bot + n_top - 1) * CTRL_PITCH
         h_cap = CAPM11 + max(self.cap_y1 - cm[2], cm[3] - self.cap_y0)            # capm.11 to the row above
-        self.H = snap(max(h_rails, h_cap) + 0.0025)
+        self.H = _ceil01(max(h_rails, h_cap))
         self.P = snap(tb + (n_bot - 0.5) * CTRL_PITCH + (self.H - h_rails) / 2)    # plate bus
         P = self.P
         self.yc = [snap(P + s) for s in self.shift]                                # diffusion centres
         self.bot_y = [snap(P - tb - (n_bot - 1 - i) * CTRL_PITCH) for i in range(n_bot)]   # bottom to top
         self.top_y = [snap(P + tt + i * CTRL_PITCH) for i in range(n_top)]
         self.ctrl_y = self.bot_y + self.top_y
-        self.cap_cy = P
+        lim = self.cap_y1 - M3_PAD / 2                       # plate via2 must stay inside the plate
+        self.cap_cy = snap(min(max(self.H / 2, P - lim), P + lim))
         self.tap = via_stack(sky130, "active_tap", "met2")
         tb_ = self.tap.bbox
         self.tap_half = max(abs(v) for v in (tb_[0][0], tb_[1][0], tb_[0][1], tb_[1][1]))
@@ -209,7 +216,7 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
 
     devs = cell_devices(design, gates, tag)
     bot, topr = rails
-    rail_y = dict(zip(bot, plan.bot_y)) | dict(zip(topr, plan.top_y))
+    rail_y = {"bot": dict(zip(bot, plan.bot_y)), "top": dict(zip(topr, plan.top_y))}   # a net may be on both sides
     lines = []
     for k, (dv, fe) in enumerate(zip(devs, f)):
         xg, yc = plan.xg[k], plan.yc[k]
@@ -217,11 +224,15 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
         ref.move((snap(X(xg)), snap(y0 + yc + fe.oy)))
         # gate: li from the PCell gate contact out to its rail, via up to the met2 rail
         side = GATE_SIDE[k]
-        y_r = rail_y[dv.g]
-        assert dv.g in (bot if side == "bot" else topr), f"{dv.g} is not a {side} rail"
         y_pad = yc + fe.pad_y
-        rect(xg - MC / 2, min(y_pad, y_r) - MC / 2, xg + MC / 2, max(y_pad, y_r) + MC / 2, LI)
-        via1(xg, y_r)
+        if dv.g == "vdd" and k == 3:            # Vref driver held off (termination unit): li to the n-tap
+            rect(xg - MC / 2, y_pad, xg + MC / 2, plan.ntap_y + MC / 2, LI)
+            rect(xg - MC / 2, plan.ntap_y - MC / 2, W, plan.ntap_y + MC / 2, LI)
+        else:
+            assert dv.g in (bot if side == "bot" else topr), f"{dv.g} is not a {side} rail"
+            y_r = rail_y[side][dv.g]
+            rect(xg - MC / 2, min(y_pad, y_r) - MC / 2, xg + MC / 2, max(y_pad, y_r) + MC / 2, LI)
+            via1(xg, y_r)
         # inner bar -> plate bus
         via1(plan.x_in[k], P)
         lines.append(mos(dv.name, dv.d, dv.g, dv.s, "vss" if dv.kind == "n" else "vdd", model_name(dv), dv.w, dv.l))
@@ -387,4 +398,109 @@ def unit_gates(g, bits):
     return dict(en=en, enb=enb, pg=f"pg_{g}", ng=f"ng_{g}")
 
 
-PHASES = ["phis", "phisb", "phig", "phigb", "vdd"]
+PHASES = ["phis", "phisb", "phig", "phigb"]
+TRUNK_W, TRUNK_PITCH = 0.32, 0.50       # met1 control trunks beside the array (via1 pads fit inside)
+SUP_BAR_W, SUP_BAR_PITCH = 0.40, 0.80   # met2 supply bars below the array
+
+
+def build_unit_array(design, bits, name=None, grid=None):
+    """CDAC with per-unit switches: abutted unit cells (alternate columns mirrored) on the row-wise
+    common-centroid grid.  Each row carries only its own rails: the sample phase pair below the devices,
+    its bits' pg/ng above (unused tracks are tied to vss).  Rails run out to met1 trunks, phases on the
+    left and bit controls on the right; the vertical supply lines are tied by met2 bars below the array
+    and the top-plate straps by a met4 bar above it.  Returns (Component, info, reference netlist)."""
+    from gdsfactory import Component
+    from gdsfactory.components import rectangle
+
+    grid = grid or rowwise_grid(bits)
+    R, C = len(grid), len(grid[0])
+    gates = [[unit_gates(g, bits) for g in row] for row in grid]
+    bot_rows, top_rows = [], []
+    for row in gates:
+        bot_rows.append([n for n in PHASES if any(n in (g["en"], g["enb"]) for g in row)])
+        tops = dict.fromkeys(n for g in row for n in (g["ng"], g["pg"]) if n not in SUPPLY)
+        top_rows.append(sorted(tops, key=lambda n: (n not in PHASES, n.split("_")[-1], n)))
+    n_bot, n_top = max(map(len, bot_rows)), max(map(len, top_rows))
+    plan = UnitCellPlan(design, n_bot, n_top)
+    W, H = plan.W, plan.H
+    Wa, Ha = C * W, R * H
+    name = name or f"cdacu{bits}b"
+    top = Component(name + "_hier")
+
+    def rect(xa, ya, xb, yb, layer):
+        xa, xb, ya, yb = snap(min(xa, xb)), snap(max(xa, xb)), snap(min(ya, yb)), snap(max(ya, yb))
+        r = top << rectangle(size=(snap(xb - xa), snap(yb - ya)), layer=layer)
+        r.move((xa, ya))
+
+    def via1(x, y):
+        rect(x - V1_M1[0] / 2, y - V1_M1[1] / 2, x + V1_M1[0] / 2, y + V1_M1[1] / 2, MET1)
+        rect(x - V1 / 2, y - V1 / 2, x + V1 / 2, y + V1 / 2, VIA1)
+        rect(x - V1_M2[0] / 2, y - V1_M2[1] / 2, x + V1_M2[0] / 2, y + V1_M2[1] / 2, MET2)
+
+    lines, rail_pos = [], []                      # rail_pos: (net, y) of every used rail
+    for r in range(R):
+        y0 = (R - 1 - r) * H
+        bot = bot_rows[r] + [None] * (n_bot - len(bot_rows[r]))
+        tops = top_rows[r] + [None] * (n_top - len(top_rows[r]))
+        names = [n or f"_nc{r}_{i}" for i, n in enumerate(bot + tops)]
+        for c in range(C):
+            lines += draw_cell(top, plan, c * W, y0, c % 2 == 1, (names[:n_bot], names[n_bot:]), gates[r][c],
+                               f"{r}_{c}", design)
+        unused = []
+        for n, y in zip(bot + tops, plan.ctrl_y):
+            if n:
+                rail_pos.append((n, y0 + y))
+            else:                                 # unused track: tied to the vss line on the array edge
+                unused.append(y0 + y)
+                via1(0.0, y0 + y)
+        if unused:                                # one met1 / met2 bar over the tie vias (pads too close otherwise)
+            lo, hi = min(unused) - V1_M1[1] / 2, max(unused) + V1_M1[1] / 2
+            rect(-V1_M2[0] / 2, min(unused) - V1_M2[1] / 2, V1_M2[0] / 2, max(unused) + V1_M2[1] / 2, MET2)
+            for ty in [(rr * H + plan.ptap_y) for rr in range(R)]:       # p-taps (vss) on the same edge
+                if 0 <= ty - plan.tap_half - hi < R_M1_SP:
+                    hi = ty
+                if 0 <= lo - (ty + plan.tap_half) < R_M1_SP:
+                    lo = ty
+            rect(-V1_M1[0] / 2, lo, V1_M1[0] / 2, hi, MET1)
+
+    # control trunks (met1): phases on the left, bit controls on the right
+    nets = list(dict.fromkeys(n for n, _ in rail_pos))
+    left = [n for n in PHASES if n in nets]
+    right = sorted((n for n in nets if n not in left), key=lambda n: (n.split("_")[-1], n))
+    edge = plan.tap_half + R_M1_SP + TRUNK_W / 2            # clear of the vss line / p-tap on the edge
+    tx = {n: snap(-edge - i * TRUNK_PITCH) for i, n in enumerate(left)}
+    tx.update({n: snap(Wa + edge + i * TRUNK_PITCH) for i, n in enumerate(right)})
+    for n, y in rail_pos:
+        xa, xb = (tx[n], 0.0) if n in left else (Wa, tx[n])
+        rect(xa - V1_M2[0] / 2, y - CTRL_W / 2, xb + V1_M2[0] / 2, y + CTRL_W / 2, MET2)
+        via1(tx[n], y)
+    for n in nets:
+        ys = [y for m, y in rail_pos if m == n]
+        lo, hi = min(ys) - V1_M1[1] / 2, max(ys) + V1_M1[1] / 2
+        rect(tx[n] - TRUNK_W / 2, lo, tx[n] + TRUNK_W / 2, hi, MET1)
+        _pin(top, n, tx[n], hi - 0.2, MET1, (0.14, 0.3))
+    # supply lines -> met2 bars below the array
+    for i, net in enumerate(SUPPLY):
+        yb = -0.6 - i * SUP_BAR_PITCH
+        xs = sorted({snap(c * W + (W - plan.sup_x[net] if c % 2 else plan.sup_x[net])) for c in range(C)})
+        for x in xs:
+            rect(x - M1_LINE / 2, yb, x + M1_LINE / 2, 0, MET1)
+            via1(x, yb)
+        rect(xs[0] - V1_M2[0] / 2, yb - SUP_BAR_W / 2, xs[-1] + V1_M2[0] / 2, yb + SUP_BAR_W / 2, MET2)
+        _pin(top, net, xs[0] + 0.2, yb, MET2)
+    # top-plate straps -> met4 bar above the array
+    xs = sorted({snap(c * W + (W if c % 2 else 0)) for c in range(C)})
+    yt = Ha + 0.5
+    for x in xs:
+        rect(x - STRAP_W / 2, Ha, x + STRAP_W / 2, yt + STRAP_W, MET4)
+    rect(xs[0] - STRAP_W / 2, yt, xs[-1] + STRAP_W / 2, yt + STRAP_W, MET4)
+    _pin(top, "top", xs[0], yt + STRAP_W / 2, MET4)
+
+    top = top.flatten()
+    top.name = name
+    pins = ["top"] + SUPPLY + left + right
+    bb = top.bbox
+    info = dict(bits=bits, grid=grid, cell=(W, H), rails_bot=bot_rows, rails_top=top_rows,
+                ctrl_rails=n_bot + n_top, width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),
+                pins=pins)
+    return top, info, _subckt(name, pins, lines)

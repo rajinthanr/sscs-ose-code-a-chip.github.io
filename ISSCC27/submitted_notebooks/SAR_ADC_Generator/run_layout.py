@@ -105,9 +105,26 @@ def do_unit(bits, out, rows=0, cols=0):
     return gds, ref, comp.name, info
 
 
+def do_cdacu(bits, out):
+    from sargen.layout import unitcell
+    design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
+    t0 = time.time()
+    comp, info, ref_txt = unitcell.build_unit_array(design, bits)
+    gds = out / f"{comp.name}.gds"
+    comp.write_gds(gds)
+    info["gen_s"] = time.time() - t0
+    ref = out / f"{comp.name}_ref.spice"
+    ref.write_text(ref_txt)
+    print(f"generated {gds} in {info['gen_s']:.1f} s: cell {info['cell'][0]:.2f} x {info['cell'][1]:.2f} um, "
+          f"{info['ctrl_rails']} control rails per row, block {info['width']:.1f} x {info['height']:.1f} um")
+    for row, b, t in zip(info["grid"], info["rails_bot"], info["rails_top"]):
+        print("   ", " ".join(f"{g!s:>2}" for g in row), "  below:", ",".join(b), " above:", ",".join(t))
+    return gds, ref, comp.name, info
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--rows", type=int, default=2, help="unitabut: rows of abutted unit cells")
     ap.add_argument("--cols", type=int, default=3, help="unitabut: columns (alternate columns mirrored)")
@@ -117,7 +134,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     gds, ref, cell, info = {"cdac": do_cdac, "comparator": do_comparator, "switches": do_switches,
                             "cdacsw": do_cdacsw, "unitcell": do_unit,
-                            "unitabut": lambda b, o: do_unit(b, o, a.rows, a.cols)}[a.block](a.bits, out)
+                            "unitabut": lambda b, o: do_unit(b, o, a.rows, a.cols),
+                            "cdacu": do_cdacu}[a.block](a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")
