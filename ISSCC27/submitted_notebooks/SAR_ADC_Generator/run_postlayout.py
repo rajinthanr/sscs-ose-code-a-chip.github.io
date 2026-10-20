@@ -32,7 +32,12 @@ def main():
     if (pex_dir / f"cdacsw{a.bits}b_pex.spice").exists():
         pins = nl.subckt_pins(lay / f"cdacsw{a.bits}b_ref.spice", f"cdacsw{a.bits}b")
         cdacsw = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacsw{a.bits}b_pex.spice", "cdacsw", pins), pins))
+    cdacu = {}
+    if (pex_dir / f"cdacu{a.bits}b_pex.spice").exists():
+        pins = nl.subckt_pins(lay / f"cdacu{a.bits}b_ref.spice", f"cdacu{a.bits}b")
+        cdacu = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacu{a.bits}b_pex.spice", "cdacsw", pins), pins))
     cases = [("schematic", {}), ("extracted CDAC", cdac), ("extracted comparator", cmp_),
+             ("unit-cell CDAC", cdacu), ("unit-cell CDAC + comparator", {**cdacu, **cmp_}),
              ("compact CDAC+switches", cdacsw), ("compact CDAC+switches + comparator", {**cdacsw, **cmp_}),
              ("extracted switches", sw), ("all blocks extracted", {**cdac, **cmp_, **sw})]
     if a.only:
