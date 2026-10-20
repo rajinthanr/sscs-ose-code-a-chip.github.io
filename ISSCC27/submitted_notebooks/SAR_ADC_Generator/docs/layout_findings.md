@@ -184,8 +184,23 @@ the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^
 
   - The top-plate switch's LVT leakage during conversion is the cause. The unit switches' leakage only costs power.
   - A standard-Vt top switch fails to settle at ss / -40 C (ENOB 3.19), which is why sizing picked LVT.
-  - A mixed gate (standard-Vt NMOS, LVT PMOS) settles cold: ss / -40 C 1.80 V ENOB 3.99, 1.62 V 3.74; tt 3.98.
-    The hot corners are still being checked.
+  - Both mixed gates were checked at every corner (full table: `results/4bit/sweeps/top_switch_leakage.md`,
+    rerun with `studies/top_switch_leakage.py`):
+
+    | Top-plate switch | fs / 125 C DNL | ff / 125 C DNL | ss / -40 C 1.80 V ENOB | ss / -40 C 1.62 V ENOB |
+    |---|---|---|---|---|
+    | LVT N + LVT P (sized) | 0.26 | 0.20 | 3.98 | - |
+    | SVT N + SVT P | 0.07 | 0.07 | 3.19 | 2.99 |
+    | SVT N + LVT P | 0.33 | 0.20 | 3.99 | 3.74 |
+    | LVT N + SVT P | 0.07 | 0.07 | 3.60 | 3.29 |
+
+  - Reading: the leak is through the PMOS (the top plate sits near vcm, and the LVT PMOS leaks most when hot);
+    the cold-corner settling is carried by the PMOS too. One device does both jobs, so no threshold choice wins
+    every corner at this size.
+  - Fixes still open, each consistent with the sizing rules: a wider standard-Vt PMOS (settling scales with W,
+    subthreshold leakage too, but from a far lower base), a longer-L LVT PMOS (leakage falls faster than
+    on-conductance), or a bootstrapped top switch. This is a sizing decision for the generator's switch step,
+    not a layout one; the layout generator already takes any flavour.
 - **SAR logic** (`sarlogic.py`): LibreLane 3.1 Classic hardens the same standard cells as the SPICE netlist.
   - No resizing, port buffers or clock tree, so the drive strengths stay as sized for 2^i units.
   - Routing up to met4, met4-only power grid, tap cells and decaps.
