@@ -167,6 +167,41 @@ cap on this 15 GB host.
 So ALIGN produced no comparator on this machine, and placing it without symmetry constraints would defeat
 the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^2 comparator in about 2 s.
 
+## 6c. Top-plate switch, SAR logic and core
+
+- **Top-plate switch** (`topswitch.py`): a transmission gate in closed guard rings, a p+ ring to vss around the
+  NMOS and an n-tap ring to vdd around the PMOS.
+  - The switch is the floating top plate's only junction to the substrate.
+  - Fingers keep the top node on inner shared bars.
+  - 4-bit: 4.45 x 5.62 um including its pin exits.
+- **Leakage at hot, fast-NMOS corners** (schematic, fixed 4-bit design, fs / 125 C):
+
+  | Top-plate switch | DNL | INL | Offset | Gain |
+  |---|---|---|---|---|
+  | LVT (as designed) | 0.26 | 0.29 | -0.40 | +0.28 |
+  | Standard-Vt | 0.07 | 0.06 | -0.14 | +0.01 |
+  | Standard-Vt unit switches instead (top switch stays LVT) | 0.33 | 0.30 | -0.40 | +0.34 |
+
+  - The top-plate switch's LVT leakage during conversion is the cause. The unit switches' leakage only costs power.
+  - A standard-Vt top switch fails to settle at ss / -40 C (ENOB 3.19), which is why sizing picked LVT.
+  - A mixed gate (standard-Vt NMOS, LVT PMOS) settles cold: ss / -40 C 1.80 V ENOB 3.99, 1.62 V 3.74; tt 3.98.
+    The hot corners are still being checked.
+- **SAR logic** (`sarlogic.py`): LibreLane 3.1 Classic hardens the same standard cells as the SPICE netlist.
+  - No resizing, port buffers or clock tree, so the drive strengths stay as sized for 2^i units.
+  - Routing up to met4, met4-only power grid, tap cells and decaps.
+  - Pins placed by side toward what they connect to.
+  - 23.4 x 23.4 um, clean under LibreLane's checks and under our own (the LVS reference includes the decaps).
+- **Core** (`core.py`): blocks placed from their pin labels and routed by script.
+  - The top-plate net is met4 only.
+  - pg/ng reach the CDAC trunks through a met3/met2 channel at spots clear of the rails.
+  - Signal buses are met3; power buses are met4 (vss) and met3 (vdd).
+  - Result: 65.4 x 42.1 um, DRC 0/0, LVS match.
+  - Shorts caught by LVS and fixed:
+    - the CDAC's vss and vdd drops on the same x;
+    - the top switch's power drops crossing the top-plate stub;
+    - vdd's met3 hop landing on a phase bus.
+  - Lesson: route power away from the top-plate net by construction, and run LVS on every assembly change.
+
 ## 7. References
 
 - B. Razavi, "The StrongARM Latch," IEEE SSC Magazine, 2015;
