@@ -19,20 +19,20 @@ from .pdk import lib_line
 from .spice import read_wrdata, run_many
 
 
-def evaluate(spec, design, out, *, hits=16, fft_n=128, fft_cycles=None, chunk=32):
+def evaluate(spec, design, out, *, hits=16, fft_n=128, fft_cycles=None, chunk=32, **tb_kw):
     """Ramp (DNL/INL/offset/gain) + coherent sine (ENOB) + power for a fixed design."""
     out = Path(out)
     n_ramp = hits * 2**spec.bits
     v0, v1 = -0.5 * spec.lsb, spec.vref + 0.5 * spec.lsb
     codes_r, vin_r, _ = simulate_codes(spec, design, "ramp", n_ramp, out / "ramp", chunk,
-                                       ramp=(v0, (v1 - v0) / n_ramp))
+                                       ramp=(v0, (v1 - v0) / n_ramp), **tb_kw)
     hist = metrics.histogram_inl_dnl(codes_r, spec.bits)
     trans = metrics.transition_inl_dnl(metrics.transition_levels(vin_r, codes_r, spec.bits),
                                        spec.vref, spec.bits)
     fft_cycles = fft_cycles or _coprime_cycles(fft_n)
     f_in = metrics.coherent_tone(spec.fs, fft_n, fft_cycles)
     codes_s, _, pw = simulate_codes(spec, design, "sine", fft_n, out / "sine", chunk,
-                                    sine=(spec.vref / 2 * 0.99, f_in))
+                                    sine=(spec.vref / 2 * 0.99, f_in), **tb_kw)
     fft = metrics.fft_metrics(codes_s, spec.bits, fft_cycles)
     return dict(enob=fft["enob"], sndr_db=fft["sndr_db"], sfdr_db=fft["sfdr_db"], f_in=f_in,
                 dnl_max=hist["dnl_max"], inl_max=hist["inl_max"], missing=hist["missing_codes"],
