@@ -90,13 +90,16 @@ def build_core(bits, layout_dir, name=None):
     top_y = cd["top"][2]                                       # CDAC top-plate bar (met4)
     bar_lo = top_y - 0.2
     _, sa_pins, sa_bb = _labels(L / "strongarm.gds")
-    x_spine = snap(cd["top"][1] + 0.4)                        # spine near the bar's left end
+    # spine near the bar's left end, far enough east that the top switch and its west supply drops clear the
+    # CDAC's west trunks (phisb / phig run down from them to the buses)
+    _, ts_pins, ts_bb = _labels(L / "topsw.gds")
+    x_trunks = max(cd[n][1] for n in ("vin", "phis", "phisb", "phig", "phigb"))
+    x_spine = snap(max(cd["top"][1] + 0.4, x_trunks + 0.16 + 0.5 + 1.4 + 0.5 + (ts_bb[2] - ts_bb[0]) + 0.8))
     # comparator below the CDAC, its inp exit just right of the spine
     sx_c = x_spine + 1.0 - sa_bb[0]
     sy_c = cbb[1] - 0.6 - sa_bb[3]
     cm, cmb = K.place(L / "strongarm.gds", sx_c, sy_c)
     # top-plate switch left of the spine, its met4 top pad at the comparator input height
-    _, ts_pins, ts_bb = _labels(L / "topsw.gds")
     sx_t = x_spine - 0.8 - ts_bb[2]
     sy_t = cm["inp"][2] - ts_pins["top"][2]
     ts, tsb = K.place(L / "topsw.gds", sx_t, sy_t)
