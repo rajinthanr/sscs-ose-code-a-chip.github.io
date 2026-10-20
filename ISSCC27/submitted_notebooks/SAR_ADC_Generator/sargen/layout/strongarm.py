@@ -42,6 +42,7 @@ M1_STUB = 0.23          # met1 vertical stubs (mcon + 0.03)
 TRK = 0.26              # met2 track width (= via1 pad height, so vias sit flush in a track)
 TRK_IN = 0.14           # inp / inn / clk tracks
 XJ = 0.46               # output tracks swap between x = -XJ and +XJ
+EXIT = 0.8              # inp / inn / clk / qp / qn leave the cell on met2 this far past its edge
 TRIM_L = 0.80           # met3 trim stub on outn: extracted outp / outn within 0.15 % (4- and 6-bit sizing)
 
 
@@ -357,8 +358,8 @@ def build_strongarm(c, name="strongarm"):
         xv = snap(max(cand, key=lambda x: min(abs(x - t) for t in tails)))
         assert min(abs(xv - t) for t in tails) >= V1_M1[0] / 2 + R_M1_SP + M1_STUB / 2, "no room for the input via"
         v1(xv, y_in)
-        hline(y_in, xv, sgn * xr, MET2, TRK_IN)
-        _pin(top, net, sgn * (xr - 0.4), y_in, MET2)
+        hline(y_in, xv, sgn * (x_edge + EXIT), MET2, TRK_IN)       # inputs leave the cell sideways
+        _pin(top, net, sgn * (x_edge + EXIT - 0.15), y_in, MET2)
 
     # ---------------------------------------------------------------- xp / xn: pair -> latch (li) -> reset (met1)
     for net, nrow, prow in (("xp", nl, pl), ("xn", nr, pr)):
@@ -423,7 +424,11 @@ def build_strongarm(c, name="strongarm"):
             mcon(x, bar_y(f, yP, 0) + MC / 2)
         mcon(xn_, bar_y(fn_, yN, 1) - MC / 2)
         vline(xn_, bar_y(fn_, yN, 1) - MC, max(bar_y(f, yP, 0) for x, n, f in prow.bars(net)) + MC, MET1, M1_STUB)
-        _pin(top, net, xn_, (y_lo + y_hi) / 2, MET1, (0.14, 0.3))
+        # output exit: via onto met2 between the two output tracks, out past the cell edge (no track there)
+        sgn = -1 if net == "qp" else 1
+        v1(xn_, (y_lo + y_hi) / 2, li=False)
+        hline((y_lo + y_hi) / 2, xn_, sgn * (x_edge + EXIT), MET2, TRK_IN)
+        _pin(top, net, sgn * (x_edge + EXIT - 0.15), (y_lo + y_hi) / 2, MET2)
     # latch-NMOS dummies: outer bar tied to the shared output bar (met1 across the band)
     for nrow, d_net, o_net in ((nl, "d_outn", "outn"), (nr, "d_outp", "outp")):
         (xd, _, fd), = nrow.bars(d_net)
@@ -449,12 +454,12 @@ def build_strongarm(c, name="strongarm"):
         hline(y_clk1, xa, max([g["x"] for g in gs] + [x_out]) + MC / 2, LI, MC)
         v1(x_out, y_clk1)
     hline(y_clk1, -xr, xr, MET2, TRK_IN)
-    hline(y_clk0, -xr, xr, MET2, TRK_IN)
+    hline(y_clk0, -(x_edge + EXIT), xr, MET2, TRK_IN)
     for x in (-xr, xr):
         v2(x, y_clk0)
         v2(x, y_clk1)
         vline(x, y_clk0, y_clk1, MET3, M3_PAD)
-    _pin(top, "clk", -xr, y_clk0, MET2)
+    _pin(top, "clk", -(x_edge + EXIT - 0.15), y_clk0, MET2)
     _pin(top, "vss", 0.0, RAIL_W / 2, MET1)
     _pin(top, "vdd", 0.0, y_vdd + RAIL_W / 2, MET1)
 

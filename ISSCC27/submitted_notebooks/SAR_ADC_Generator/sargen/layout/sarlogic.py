@@ -71,6 +71,12 @@ def harden(bits, out, name="sar_logic", die=None):
         "RUN_LINTER": False,
         "SYNTH_ELABORATE_ONLY": True,             # keep the hand-sized cells as written
     }
+    # pins by side, toward what they connect to in the core: plate drivers west (CDAC bit-control trunks),
+    # comparator / phase nets south, timing inputs north, bit outputs east
+    order = ["#W"] + [f"{p}_{i}" for i in range(bits) for p in ("ng", "pg")] + \
+            ["", "#S", "qp", "clk", "phisb", "phig", "", "#N", "clkt", "en", "trial_.*", "latch_.*", "", "#E", "bo_.*"]
+    (out / "pins.cfg").write_text("\n".join(order) + "\n")
+    cfg["IO_PIN_ORDER_CFG"] = "dir::pins.cfg"
     (out / "config.json").write_text(json.dumps(cfg, indent=1))
     runs = out / "runs"
     if runs.exists():

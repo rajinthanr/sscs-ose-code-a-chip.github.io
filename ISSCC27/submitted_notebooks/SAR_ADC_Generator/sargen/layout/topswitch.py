@@ -24,6 +24,7 @@ from .strongarm import (RAIL_W, R_DIFF_TAP, TAP_H, M1_STUB, TRK, TRK_IN, WF_MAX,
 from .unitcell import LI, MC, MCON, NSDM, PSDM, R_M1_SP, R_M2_SP, V1_M1, V1_M2, _pin, _poly
 
 VIA3, M3_TOP = (70, 44), 0.50          # via3; met3 landing (met3.6 area 0.24 um^2)
+EXIT = 0.8                              # vcm / phit / phitb leave the cell on met2 this far past its edge
 
 
 def _fingers(name, kind, w, l, flavor, gate, side):
@@ -130,15 +131,16 @@ def build_top_switch(design, name="topsw"):
     box(xt, y_top, 0.6, 0.6, MET4)
     _pin(top, "top", xt, y_top, MET4)
     xv = min(x for row in (nrow, prow) for x, n, f in row.bars("vcm"))
-    _pin(top, "vcm", xv, y_vcm, MET2)
+    rect(-X1 - EXIT, y_vcm - TRK_IN / 2, xv, y_vcm + TRK_IN / 2, MET2)     # vcm leaves the cell to the left
+    _pin(top, "vcm", -X1 - EXIT + 0.15, y_vcm, MET2)
     # ---- gates: combs -> via at the comb end -> pins on met2
     for row, y, net in ((nrow, y_g0, "phit"), (prow, y_g1, "phitb")):
         xa = min(f["x"] for f in row.f) - f["fe"].pad_poly[1]
         xb = max(f["x"] for f in row.f) + 0.4
         rect(xa, y - MC / 2, xb + MC / 2, y + MC / 2, LI)
         v1(xb, y)
-        rect(xb, y - TRK_IN / 2, x_ring - TAP_H / 2 - 0.3, y + TRK_IN / 2, MET2)
-        _pin(top, net, xb, y, MET2)
+        rect(xb, y - TRK_IN / 2, X1 + EXIT, y + TRK_IN / 2, MET2)         # gates leave the cell to the right
+        _pin(top, net, X1 + EXIT - 0.15, y, MET2)
     _pin(top, "vss", 0.0, RAIL_W / 2, MET1)
     _pin(top, "vdd", 0.0, y_vdd + RAIL_W / 2, MET1)
     top = top.flatten()

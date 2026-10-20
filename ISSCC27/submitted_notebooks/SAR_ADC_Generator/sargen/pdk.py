@@ -15,7 +15,8 @@ PFET = "sky130_fd_pr__pfet_01v8"
 NFET_LVT = "sky130_fd_pr__nfet_01v8_lvt"
 PFET_LVT = "sky130_fd_pr__pfet_01v8_lvt"
 # transmission-gate flavours: (nmos model, L_n, pmos model, L_p); pfet_01v8_lvt needs L >= 0.35 um
-TG_FLAVORS = {"std": (NFET, 0.15, PFET, 0.15), "lvt": (NFET_LVT, 0.15, PFET_LVT, 0.35)}
+TG_FLAVORS = {"std": (NFET, 0.15, PFET, 0.15), "lvt": (NFET_LVT, 0.15, PFET_LVT, 0.35),
+              "mix": (NFET, 0.15, PFET_LVT, 0.35)}   # SVT NMOS (low leakage) + LVT PMOS (conducts cold)
 MIM = "sky130_fd_pr__cap_mim_m3_1"
 
 L_MIN = 0.15          # um, 1.8 V devices
