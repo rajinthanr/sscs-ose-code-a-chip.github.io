@@ -128,6 +128,47 @@ Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level):
 - **Remaining blocks:** SAR logic layout, top-level assembly, TinyTapeout pins.
 - **Post-layout PVT + Monte Carlo** of the full core.
 
+## 6a. Dummies and guard rings per block
+
+Hard SKY130 rules are only latch-up: LU.2 / LU.3 (every n-diffusion within 15 um of a contacted p-tap, every
+p-diffusion within 15 um of an n-tap; Magic `sky130A.tech`) and nwell.4 (every n-well has a contacted tap).
+Everything else is practice, worth its area only where an error budget needs it (1 LSB = 112 mV at 4 bits,
+7 mV at 8 bits).
+
+| Block | Dummies | Guard ring | Priority | SARGen now |
+|---|---|---|---|---|
+| CDAC MIM array | ring of grounded dummy unit caps (edge etch / density) | none (metal stack) | optional at 4 bits (+94 % area), should at 8 bits (+27 %) | none: proposed as a generator option for >= 6 bits |
+| CDAC per-unit switches | none (no ratio matching) | no ring; taps within 15 um | taps must | p-taps / n-taps on the cell edges, shared |
+| Top-plate sampling switch | optional half-size charge-injection dummies (circuit) | p+ ring to a quiet ground (its diffusion is the floating top plate's only junction) | should | not laid out yet |
+| Comparator input pair | end dummies | p+ ring with the tail | must / should | done: dummy fingers + p-tap ring |
+| Comparator latch NMOS | end dummies (mismatch / 4 at the input) | same p+ ring | should | inside the p-tap ring; no dummies yet |
+| Comparator latch / reset PMOS | optional (mismatch / 10) | n+ ring | n-tap must, ring should | n-tap ring done |
+| Output inverters | balance the loads on qp / qn | taps | should | symmetric, equal loads |
+| SAR logic (hd cells) | none | none; tap cells every 13 um (`FP_TAPCELL_DIST`), decaps, a p+ strip toward the comparator | taps must | not laid out yet |
+| Vref / clock lines | grounded shield tracks between clock and the top plate / comparator P, Q nodes | n/a | should | clock kept on its own tracks, away from inputs |
+
+TinyTapeout: met5 forbidden; the analog pin path is < 500 ohm and < 5 pF; ~20 mA gives ~0.1 V drop through
+the power grid, so decouple vref on chip and give the analog ground its own branch from VGND. Substrate
+noise from neighbouring tiles: distance first (comparator and top-plate switch at the tile edge away from the
+SAR logic), then p+ rings. Deep n-well costs >= 6 um per side (dnwell / nwell.5 / nwell.7) and is only worth
+considering for an 8-bit comparator. Sources: Razavi, SSC Magazine 2015; Pelgrom, JSSC 1989; Hastings;
+WVU EE551 analog layout notes; SkyWater periphery rules; tinytapeout.com/specs/analog; open_pdks guard-ring
+generators.
+
+## 6b. ALIGN as an alternative layout engine
+
+ALIGN (ALIGN-public + ALIGN-pdk-sky130) was tried twice for the StrongARM, always with a container memory
+cap on this 15 GB host.
+- Flat netlist (2026-10-20): killed at the 6 GB cap during placement. It also ignores L (fixed 0.15 um,
+  long channels only as stacks) and needs W on a 0.21 um grid.
+- Hierarchical netlist (2026-10-21; input stage, cross-coupled NMOS, PMOS latch, reset, inverters):
+  - any `SymmetricBlocks` constraint made placement explode past 5 GB, even for a two-transistor block;
+  - without symmetry constraints every sub-block places, but memory grows from block to block and the full
+    comparator was killed at 6.7 GB before routing.
+
+So ALIGN produced no comparator on this machine, and placing it without symmetry constraints would defeat
+the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^2 comparator in about 2 s.
+
 ## 7. References
 
 - B. Razavi, "The StrongARM Latch," IEEE SSC Magazine, 2015;
