@@ -21,16 +21,19 @@ C1_STUB_W = 0.60                      # met4 stub from the PCell top contact C1 
 from .cell import DIFF, MET1, NWELL, VIA1, V1, Dev, _make_device
 
 NSDM, PSDM = (93, 44), (94, 20)
-CTRL_PITCH, CTRL_W = 0.42, 0.17       # control rails (met2): via1 pads widen to 0.26 only at the via
-SUP_PITCH, SUP_W = 0.48, 0.23         # supply rails
+LVTN = (125, 44)
+CTRL_PITCH, CTRL_W = 0.34, 0.14       # control rails (met2, min width); via1 pads widen to 0.26 at the via
+SUP_PITCH, SUP_W = 0.40, 0.20         # supply rails
 M1_W = 0.23                           # met1 stub width
 V1_M1 = (0.27, 0.32)                  # met1 pad around via1 for a vertical stub (x, y)
 V1_M2 = (0.32, 0.26)                  # met2 pad around via1 on a horizontal rail (x, y)
-EDGE = 0.15                           # device bbox to cell edge (2 x EDGE between mirrored cells)
-DEV_GAP = 0.30                        # between devices of one type
-NP_GAP = 0.60                         # NMOS pair to PMOS pair
 STRAP_W = 0.80
 SUPPLY = ["vin", "vss", "vref", "vdd"]   # bottom to top; vin lowest (dynamic), the rest static
+# SKY130 rules used to pack the devices from their real layer extents (not gLayout's bounding boxes)
+R_DIFF_SP, R_LI_SP, R_NDIFF_NWELL, R_NWELL_PDIFF, R_LVT_GATE = 0.27, 0.17, 0.34, 0.18, 0.24
+R_LVTN_SP = 0.38                      # lvtn spacing; lvtn must not straddle the n-well (MR_lvtn.OVL.2)
+CAPM11 = 1.34                         # capm to unrelated met3
+VIA2_CAPM = 0.20                      # via2 clearance from a capm edge (inside or outside)
 
 
 def cell_devices(design, gates, tag="u"):
@@ -47,48 +50,117 @@ def cell_devices(design, gates, tag="u"):
             Dev(f"Mdp_{tag}", "p", drv["wp"], 0.15, "vref", gates["pg"], p, **kw)]
 
 
+def _ext(comp, layer):
+    pts = [pt for poly in comp.get_polygons(by_spec=layer) for pt in poly]
+    if not pts:
+        return None
+    return min(p[0] for p in pts), max(p[0] for p in pts), min(p[1] for p in pts), max(p[1] for p in pts)
+
+
 class UnitCellPlan:
-    """Geometry shared by every cell of an array (computed once from the device sizes and K)."""
+    """Geometry shared by every cell of an array, packed from real layer extents and SKY130 rules."""
 
     def __init__(self, design, n_ctrl):
         from .pcell import import_pcell, mim_cap
         proto = cell_devices(design, dict(en="a", enb="b", pg="c", ng="d"), "proto")
+        self.devs = proto
         self.comps = [_make_device(d) for d in proto]
         self.w = [c.bbox[1][0] - c.bbox[0][0] for c in self.comps]
         self.h = [c.bbox[1][1] - c.bbox[0][1] for c in self.comps]
         self.inner = [c.ports["multiplier_0_source_W"].center[1] for c in self.comps]   # unrotated
-        x = EDGE
-        self.xc = []
-        for k, w in enumerate(self.w):
-            self.xc.append(snap(x + w / 2))
-            x += w + (NP_GAP if k == 1 else DEV_GAP)
-        self.W = snap(x - DEV_GAP + EDGE)
+        diff = [_ext(c, DIFF) for c in self.comps]
+        li = [_ext(c, (67, 20)) for c in self.comps]
+        lvt = [_ext(c, LVTN) for c in self.comps]
+        poly = [_ext(c, (66, 20)) for c in self.comps]
+        imp = [_ext(c, NSDM) or _ext(c, PSDM) for c in self.comps]
+        nw = [_ext(c, NWELL) for c in self.comps]
+        self.imp = imp
+
+        def pitch(a, b):
+            """centre distance device a -> device b (b to the right)."""
+            if proto[a].kind != proto[b].kind:              # NMOS (a) next to the PMOS n-well (b)
+                d = diff[a][1] + R_NDIFF_NWELL - nw[b][0]
+                if lvt[a]:                                  # NMOS lvtn fully outside the n-well
+                    d = max(d, lvt[a][1] + 0.05 - nw[b][0])
+                if lvt[a] and lvt[b]:
+                    d = max(d, lvt[a][1] + R_LVTN_SP - lvt[b][0])
+            else:
+                d = max(diff[a][1] - diff[b][0] + R_DIFF_SP, li[a][1] - li[b][0] + R_LI_SP)
+                if lvt[a] and not lvt[b]:
+                    d = max(d, lvt[a][1] - poly[b][0] + R_LVT_GATE)
+                if lvt[b] and not lvt[a]:
+                    d = max(d, poly[a][1] - lvt[b][0] + R_LVT_GATE)
+            return snap(d + 0.025)
+
+        # mirrored neighbours face the same device type: half the self-pitch to each cell edge
+        e_left = max(pitch(0, 0) / 2, -imp[0][0])
+        e_right = max(pitch(3, 3) / 2, imp[3][1])
+        self.xc = [snap(e_left)]
+        for k in range(1, 4):
+            self.xc.append(snap(self.xc[-1] + pitch(k - 1, k)))
+        self.W = snap(self.xc[3] + e_right)
+        self.lvt_ext = lvt
+        self.diff = diff
+
         self.n_ctrl = n_ctrl
-        self.ctrl_y = [snap(0.30 + i * CTRL_PITCH) for i in range(n_ctrl)]
+        self.ctrl_y = [snap(0.25 + i * CTRL_PITCH) for i in range(n_ctrl)]
         y_ctrl_top = self.ctrl_y[-1] + CTRL_W / 2
-        self.y_inner = snap(y_ctrl_top + 0.45 + max(o + h / 2 for o, h in zip(self.inner, self.h)))
+        self.y_inner = snap(y_ctrl_top + 0.40 + max(o + h / 2 for o, h in zip(self.inner, self.h)))
         self.yc = [snap(self.y_inner - o) for o in self.inner]                          # device centres
-        dev_top = max(y + h / 2 for y, h in zip(self.yc, self.h))
-        self.sup_y = {s: snap(dev_top + 0.45 + i * SUP_PITCH) for i, s in enumerate(SUPPLY)}
-        self.y_tap = snap(self.sup_y["vdd"] + SUP_W / 2 + 0.55)
+        self.dev_top = max(y + e[3] for y, e in zip(self.yc, li))
+        self.sup_y = {s: snap(self.dev_top + 0.40 + i * SUP_PITCH) for i, s in enumerate(SUPPLY)}
+
+        # MIM unit cap = SKY130 PDK PCell, stacked over the switch transistors
         side = design["cu"]["side"]
-        self.unit = import_pcell(*mim_cap(side, side))          # SKY130 PDK PCell, used as drawn
+        self.unit = import_pcell(*mim_cap(side, side))
         ub = self.unit.bbox
-        self.cap_h = ub[1][1] - ub[0][1]
-        self.cap_x0, self.cap_x1, self.cap_y1 = ub[0][0], ub[1][0], ub[1][1]   # met3 plate (PCell origin = 0)
-        pts = [pt for poly in self.unit.get_polygons(by_spec=CAPM) for pt in poly]
-        self.capm_x0, self.capm_x1 = min(p[0] for p in pts), max(p[0] for p in pts)
-        self.c1_dx = (self.capm_x0 + self.capm_x1) / 2          # PCell top contact C1 sits on the capm
-        # capm.11: capm >= 1.34 um from unrelated met3 of the mirrored neighbours on both sides
-        lo = (1.34 + self.cap_x1 - self.capm_x0) / 2            # left neighbour, mirrored about x = 0
-        hi = self.W - (1.34 + self.capm_x1 - self.cap_x0) / 2   # right neighbour, mirrored about x = W
-        cap_lo = self.sup_y["vin"] + SUP_W / 2 + 0.25          # cap above the vin rail
-        self.cap_cy = snap(cap_lo + self.cap_h / 2)
-        self.cap_cx = snap(min(max((lo + hi) / 2, lo), hi))
-        # met4 strap above the cap, clear of the PCell's met4 C2 strip (which reaches the plate edge region)
-        self.strap_y = snap(self.cap_cy + self.cap_y1 + M4_SPACE + STRAP_W / 2)
-        self.H = snap(max(self.strap_y + STRAP_W / 2, self.y_tap + 0.35) + 0.30)
-        self.dev_top = dev_top
+        self.cap_x0, self.cap_x1, self.cap_y0, self.cap_y1 = ub[0][0], ub[1][0], ub[0][1], ub[1][1]
+        cm = _ext(self.unit, CAPM)
+        self.capm_x0, self.capm_x1, self.capm_y0, self.capm_y1 = cm
+        self.c1_dx = (cm[0] + cm[1]) / 2                        # PCell top contact C1 sits on the capm
+        m4 = [p for p in self.unit.get_polygons(by_spec=MET4)]
+        self.c2_top = max(pt[1] for poly in m4 for pt in poly)  # top of the PCell's met4 (C2 strip)
+        # cap position: lowest y (smallest cell) whose met4 strap clears the vin rail, then the most centred x;
+        # rules: capm.11 against both mirrored neighbours, every inner-bar via2 fully inside the capm or
+        # >= VIA2_CAPM away from it (capm.8), plate inside the cell
+        vin_top = self.sup_y["vin"] + SUP_W / 2
+        strap_off = self.c2_top + 0.30 + STRAP_W / 2
+        bus = (self.xc[0] - M3_PAD / 2, self.xc[3] + M3_PAD / 2)
+        rdx = (cm[1] + self.cap_x1) / 2                 # plate via2 + riser: in the PCell contact extension
+
+        def legal(x, y):
+            capm = (x + cm[0], x + cm[1], y + cm[2], y + cm[3])
+            left_unrel = max(-(x + self.cap_x0), -bus[0])
+            right_unrel = min(2 * self.W - (x + self.cap_x1), 2 * self.W - bus[1])
+            if capm[0] - left_unrel < CAPM11 or right_unrel - capm[1] < CAPM11:
+                return False
+            if x + self.cap_x0 < 0 or x + self.cap_x1 > self.W:
+                return False
+            m, h = VIA2_CAPM, VIA / 2                    # magic capm.8: no via2 under (or near) a capm
+            vx = x + rdx
+            if not (vx - h - m >= capm[1] or vx + h + m <= capm[0]):
+                return False
+            if not (self.xc[0] <= vx <= self.xc[3]):         # must land on the met2 plate bus
+                return False
+            return True
+
+        y = snap(vin_top + 0.05 + STRAP_W / 2 - strap_off)
+        found = None
+        while found is None and y < self.y_inner + 6:
+            xs_ok = [round(i * 0.05, 3) for i in range(int(self.W / 0.05) + 1) if legal(round(i * 0.05, 3), y)]
+            if xs_ok:
+                found = (min(xs_ok, key=lambda v: abs(v - self.W / 2)), y)
+            y = round(y + 0.05, 3)
+        assert found, "no legal cap position"
+        self.cap_cx, self.cap_cy = snap(found[0]), snap(found[1])
+        self.strap_y = snap(self.cap_cy + strap_off)
+        # single via2 + met3 riser from the met2 plate bus into the plate, outside the capm
+        self.riser_x = snap(self.cap_cx + rdx)
+        # body taps under the vss / vdd rails, between the devices
+        self.ptap_x = snap((self.xc[0] + self.xc[1]) / 2)
+        self.ntap_x = snap((self.xc[2] + self.xc[3]) / 2)
+        top_y = max(self.strap_y + STRAP_W / 2, self.sup_y["vdd"] + SUP_W / 2, self.sup_y["vdd"] + 0.205 + 0.18)
+        self.H = snap(top_y + 0.30)
 
 
 def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
@@ -150,42 +222,50 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
         ys = plan.sup_y[dv.d]
         rect(ox - M1_W / 2, oy, ox + M1_W / 2, ys, MET1)
         v1(ox, ys, V1_M1, V1_M2)
-        # inner bar -> plate bus (met1 pad along the bar)
+        # inner bar -> met2 plate bus (met1 pad along the bar); no via2 here (it would sit under the capm)
         v1(ix, iy, (V1_M1[1], V1_M1[0]), V1_M2)
-        v2(ix, iy)
         lines.append(mos(dv.name, dv.d, dv.g, dv.s, "vss" if dv.kind == "n" else "vdd", model_name(dv), dv.w, dv.l))
-    # plate bus (met3) through the four inner vias, riser into the cap bottom plate
+    # plate bus (met2) through the four inner via1s, one via2 beside the capm, met3 riser into the plate
     xs = sorted(plan.xc)
-    rect(xs[0] - M3_PAD / 2, plan.y_inner - M3_PAD / 2, xs[-1] + M3_PAD / 2, plan.y_inner + M3_PAD / 2, MET3)
+    rect(xs[0] - V1_M2[0] / 2, plan.y_inner - V1_M2[1] / 2, xs[-1] + V1_M2[0] / 2, plan.y_inner + V1_M2[1] / 2, MET2)
+    v2(plan.riser_x, plan.y_inner)
     capref = top << plan.unit
     if mirror:                      # the PDK PCell is asymmetric (C1 left, C2 strip right): mirror it too
         capref.mirror((0, 0), (0, 1))
     capref.move((snap(X(plan.cap_cx)), snap(y0 + plan.cap_cy)))
-    xr = plan.cap_cx + (plan.capm_x1 + plan.cap_x1) / 2      # riser lands on the plate outside the capm
-    rect(xr - 0.25, plan.y_inner, xr + 0.25, plan.cap_cy, MET3)
+    rect(plan.riser_x - 0.25, plan.y_inner, plan.riser_x + 0.25, plan.cap_cy, MET3)
     side = design["cu"]["side"]
     lines.append(f"XC_{tag} top p_{tag} sky130_fd_pr__cap_mim_m3_1 W={side} L={side} MF=1")
-    # rails and top-plate strap, edge to edge
+    # rails edge to edge
     for y in plan.ctrl_y:
         rect(0, y - CTRL_W / 2, W, y + CTRL_W / 2, MET2)
     for y in plan.sup_y.values():
         rect(0, y - SUP_W / 2, W, y + SUP_W / 2, MET2)
-    # top plate (all met4, no met5): stub from the PCell top contact C1 up past the cap edge, then a strap
-    # from cell edge to cell edge above the cap; the PCell's met4 C2 strip (bottom plate) is never crossed
+    # top plate (all met4, no met5): stub from the PCell top contact C1 up past the C2 strip, then a strap
+    # edge to edge over the static rails only
     c1x = plan.cap_cx + plan.c1_dx
     rect(c1x - C1_STUB_W / 2, plan.cap_cy, c1x + C1_STUB_W / 2, plan.strap_y, MET4)
     rect(0, plan.strap_y - STRAP_W / 2, W, plan.strap_y + STRAP_W / 2, MET4)
-    # body taps above the rails: p-tap on the NMOS side, n-tap on the PMOS side
+    # body taps directly under their rails (via1 straight up)
     tap = via_stack(sky130, "active_tap", "met2")
-    for tx, net, imp in ((plan.xc[0], "vss", PSDM), (plan.xc[3], "vdd", NSDM)):
+    for tx, net, imp in ((plan.ptap_x, "vss", PSDM), (plan.ntap_x, "vdd", NSDM)):
+        ty = plan.sup_y[net]
         t = top << tap
-        t.move((snap(X(tx)), snap(y0 + plan.y_tap)))
-        rect(tx - 0.34, plan.y_tap - 0.34, tx + 0.34, plan.y_tap + 0.34, imp)
-        rect(tx - M1_W / 2, plan.sup_y[net], tx + M1_W / 2, plan.y_tap, MET1)
-        v1(tx, plan.sup_y[net], V1_M1, V1_M2)
+        t.move((snap(X(tx)), snap(y0 + ty)))
+        rect(tx - 0.34, ty - 0.34, tx + 0.34, ty + 0.34, imp)
+        v1(tx, ty, V1_M1, V1_M2)
     # n-well: PMOS pair + n-tap, out to the PMOS-side cell edge (shared with the mirrored neighbour)
-    nx0 = plan.xc[2] - plan.w[2] / 2 - 0.10
-    rect(nx0, plan.yc[2] - plan.h[2] / 2 - 0.05, W, plan.y_tap + 0.55, NWELL)
+    nx0 = plan.xc[2] + plan.diff[2][0] - R_NWELL_PDIFF
+    rect(nx0, plan.yc[2] - plan.h[2] / 2, W, plan.sup_y["vdd"] + 0.205 + 0.18, NWELL)
+    # merge the implants of same-type neighbours (tight packing leaves slivers < 0.38 um otherwise)
+    # edge implants overlap 0.05 um past the cell edge so mirrored neighbours always merge (no slivers)
+    rect(-0.05, plan.yc[0] + plan.imp[0][2], plan.xc[0] + plan.imp[0][0] + 0.10, plan.yc[0] + plan.imp[0][3], NSDM)
+    rect(plan.xc[3] + plan.imp[3][1] - 0.10, plan.yc[3] + plan.imp[3][2], W + 0.05, plan.yc[3] + plan.imp[3][3], PSDM)
+    for a, b, lay in ((0, 1, NSDM), (2, 3, PSDM)):
+        ea, eb = plan.imp[a], plan.imp[b]
+        ylo = max(plan.yc[a] + ea[2], plan.yc[b] + eb[2])
+        yhi = min(plan.yc[a] + ea[3], plan.yc[b] + eb[3])
+        rect(plan.xc[a] + ea[1] - 0.01, ylo, plan.xc[b] + eb[0] + 0.01, yhi, lay)
     return lines
 
 
