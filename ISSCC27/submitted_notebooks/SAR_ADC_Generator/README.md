@@ -57,8 +57,10 @@ noise is not simulated; no layout parasitics yet.
 ## Roadmap
 
 - [x] 4-bit pre-layout flow: characterization, sizing, netlist, ramp/FFT/MC metrics, animation
-- [ ] gLayout generators: common-centroid MIM array, StrongARM, switches
-- [ ] DRC/LVS (Magic, Netgen, KLayout) and PEX, post-layout re-simulation
+- [x] layout generators from SKY130 PDK PCells: CDAC unit cell with its own switches, 3-8 bit common-centroid
+      CDAC arrays, compact StrongARM comparator (findings: [docs/layout_findings.md](docs/layout_findings.md))
+- [x] DRC/LVS (KLayout incl. capm.10, Magic, Netgen) and PEX, post-layout re-simulation
+- [ ] SAR logic layout, top-level assembly, TinyTapeout pins
 - [x] 4..8-bit scaling (ENOB / power / capacitance / FoM trends)
 - [x] robustness: PVT, input frequency, sample rate, comparator delay, transistor-level mismatch runs
 - [x] Colab install path
