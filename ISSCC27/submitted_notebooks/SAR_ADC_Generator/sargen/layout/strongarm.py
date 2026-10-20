@@ -129,9 +129,12 @@ class Row:
 def _fe_extra(fe):
     """Poly pad and npc extents of a FET finger (relative to the diffusion centre)."""
     if not hasattr(fe, "pad_poly"):
-        ps = list(fe.comp.get_polygons(by_spec=POLY))
-        pad = max(ps, key=lambda p: max(p[:, 0]) - min(p[:, 0]))
-        fe.pad_poly = (min(pad[:, 0]), max(pad[:, 0]), min(pad[:, 1]) + fe.oy, max(pad[:, 1]) + fe.oy)
+        # the poly around the gate contact (li pad +- 0.08), from the poly shape that holds it (for long
+        # channels the gate and its contact pad are one polygon)
+        yc = fe.pad_y - fe.oy                                       # (PCell coordinates)
+        pad = [p for p in fe.comp.get_polygons(by_spec=POLY) if min(p[:, 1]) <= yc <= max(p[:, 1])][0]
+        fe.pad_poly = (min(pad[:, 0]), max(pad[:, 0]), max(min(pad[:, 1]) + fe.oy, fe.pad[2] - 0.08),
+                       min(max(pad[:, 1]) + fe.oy, fe.pad[3] + 0.08))
         e = _ext(fe.comp, NPC)
         fe.npc = (e[0], e[1], e[2] + fe.oy, e[3] + fe.oy)
     return fe
@@ -463,7 +466,7 @@ def build_strongarm(c, name="strongarm"):
     return top, info
 
 
-def _tap_strip(top, xa, xb, yc, kind, vertical=False, margin=0.0):
+def _tap_strip(top, xa, xb, yc, kind, vertical=False, margin=0.0, mcon=None):
     """Substrate (p) or n-well (n) tap strip: tap, licons, li, implant (+ mcons to a met1 rail above it).
     Horizontal from xa to xb at height yc, or vertical (vertical=True) from y = xa to xb at x = yc."""
     def rect(a0, b0, a1, b1, lay):                  # (along, across) -> layout
@@ -480,5 +483,5 @@ def _tap_strip(top, xa, xb, yc, kind, vertical=False, margin=0.0):
     for i in range(n):
         x = x0 + i * LICON_P
         rect(x - MC / 2, yc - MC / 2, x + MC / 2, yc + MC / 2, LICON)
-        if not vertical:
+        if (not vertical) if mcon is None else mcon:
             rect(x - MC / 2, yc - MC / 2, x + MC / 2, yc + MC / 2, MCON)
