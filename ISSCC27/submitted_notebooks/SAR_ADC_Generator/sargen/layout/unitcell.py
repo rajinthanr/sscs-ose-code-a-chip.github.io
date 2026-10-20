@@ -1,6 +1,7 @@
 """CDAC unit cell: one MIM unit capacitor with its own bottom-plate switch, built for abutment (SKY130).
 
-    y ^  p-tap (vss) / n-tap (vdd)      MIM unit cap (SKY130 PDK PCell), met5 top-plate strap edge to edge
+    y ^  met4 top-plate strap           edge to edge, above the cap (no met5: TinyTapeout power grid)
+         p-tap (vss) / n-tap (vdd)      MIM unit cap = SKY130 PDK PCell (C1 top contact, C2 bottom strip)
          vdd, vref, vss rails (met2)    static rails: the only wiring under the top-plate strap
          vin rail (met2)                below the cap, so the sampled input does not couple to the top plate
          [Mdn][Msn] | [Msp][Mdp]        gLayout fets: gate bar down, inner bar = plate, outer bar = supply
@@ -14,11 +15,9 @@ Only the via positions of the four gates differ between cells, so every unit is 
 
 from .cdac import M2_PAD, M3_PAD, MET2, MET3, MET4, VIA, VIA2, snap
 
-MET5, VIA4 = (72, 20), (71, 44)
-VIA4_SZ, M5_STRAP_W = 0.80, 1.60      # via4 0.8 um; met5 min width 1.6 um
-C1_DX = -0.88                         # PCell: top-plate contact (C1, met4) centre relative to the cell origin
-PCELL_HALF_W = 2.08                   # PCell met3 plate half width (W = L = 2 um)
-M4_VPAD = VIA4_SZ + 2 * 0.19          # met4 enclosure of via4
+CAPM = (89, 44)
+M4_SPACE = 0.30                       # met4 spacing (strap to the PCell's C2 strip)
+C1_STUB_W = 0.60                      # met4 stub from the PCell top contact C1 up to the strap
 from .cell import DIFF, MET1, NWELL, VIA1, V1, Dev, _make_device
 
 NSDM, PSDM = (93, 44), (94, 20)
@@ -73,14 +72,22 @@ class UnitCellPlan:
         self.sup_y = {s: snap(dev_top + 0.45 + i * SUP_PITCH) for i, s in enumerate(SUPPLY)}
         self.y_tap = snap(self.sup_y["vdd"] + SUP_W / 2 + 0.55)
         side = design["cu"]["side"]
-        self.unit = import_pcell(*mim_cap(side, side))          # SKY130 PDK PCell
+        self.unit = import_pcell(*mim_cap(side, side))          # SKY130 PDK PCell, used as drawn
         ub = self.unit.bbox
         self.cap_h = ub[1][1] - ub[0][1]
-        cap_lo = self.sup_y["vin"] + SUP_W / 2 + 0.25          # cap (and strap) above the vin rail
+        self.cap_x0, self.cap_x1, self.cap_y1 = ub[0][0], ub[1][0], ub[1][1]   # met3 plate (PCell origin = 0)
+        pts = [pt for poly in self.unit.get_polygons(by_spec=CAPM) for pt in poly]
+        self.capm_x0, self.capm_x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+        self.c1_dx = (self.capm_x0 + self.capm_x1) / 2          # PCell top contact C1 sits on the capm
+        # capm.11: capm >= 1.34 um from unrelated met3 of the mirrored neighbours on both sides
+        lo = (1.34 + self.cap_x1 - self.capm_x0) / 2            # left neighbour, mirrored about x = 0
+        hi = self.W - (1.34 + self.capm_x1 - self.cap_x0) / 2   # right neighbour, mirrored about x = W
+        cap_lo = self.sup_y["vin"] + SUP_W / 2 + 0.25          # cap above the vin rail
         self.cap_cy = snap(cap_lo + self.cap_h / 2)
-        self.cap_cx = snap((self.xc[1] + self.xc[2]) / 2)      # over the middle of the cell
-        self.strap_y = self.cap_cy
-        self.H = snap(max(self.cap_cy + self.cap_h / 2, self.y_tap + 0.35) + 0.30)
+        self.cap_cx = snap(min(max((lo + hi) / 2, lo), hi))
+        # met4 strap above the cap, clear of the PCell's met4 C2 strip (which reaches the plate edge region)
+        self.strap_y = snap(self.cap_cy + self.cap_y1 + M4_SPACE + STRAP_W / 2)
+        self.H = snap(max(self.strap_y + STRAP_W / 2, self.y_tap + 0.35) + 0.30)
         self.dev_top = dev_top
 
 
@@ -154,7 +161,8 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
     if mirror:                      # the PDK PCell is asymmetric (C1 left, C2 strip right): mirror it too
         capref.mirror((0, 0), (0, 1))
     capref.move((snap(X(plan.cap_cx)), snap(y0 + plan.cap_cy)))
-    rect(plan.cap_cx - 0.25, plan.y_inner, plan.cap_cx + 0.25, plan.cap_cy, MET3)
+    xr = plan.cap_cx + (plan.capm_x1 + plan.cap_x1) / 2      # riser lands on the plate outside the capm
+    rect(xr - 0.25, plan.y_inner, xr + 0.25, plan.cap_cy, MET3)
     side = design["cu"]["side"]
     lines.append(f"XC_{tag} top p_{tag} sky130_fd_pr__cap_mim_m3_1 W={side} L={side} MF=1")
     # rails and top-plate strap, edge to edge
@@ -162,16 +170,11 @@ def draw_cell(top, plan, x0, y0, mirror, rails, gates, tag, design):
         rect(0, y - CTRL_W / 2, W, y + CTRL_W / 2, MET2)
     for y in plan.sup_y.values():
         rect(0, y - SUP_W / 2, W, y + SUP_W / 2, MET2)
-    # top plate: PCell top contact C1 (met4) -> met4 bridge -> via4 beside the PCell -> met5 strap.
-    # via4 must not sit on the PCell's via3 array (magic splits the MIM contact into slivers), and the met5
-    # strap passes over the PCell's met4 bottom-plate strip (C2) without touching it.
-    c1x = plan.cap_cx + C1_DX
-    vx = plan.cap_cx - PCELL_HALF_W - 0.25 - M4_VPAD / 2
-    y = plan.strap_y
-    rect(vx - M4_VPAD / 2, y - M4_VPAD / 2, vx + M4_VPAD / 2, y + M4_VPAD / 2, MET4)
-    rect(vx, y - 0.30, c1x, y + 0.30, MET4)
-    rect(vx - VIA4_SZ / 2, y - VIA4_SZ / 2, vx + VIA4_SZ / 2, y + VIA4_SZ / 2, VIA4)
-    rect(0, plan.strap_y - M5_STRAP_W / 2, W, plan.strap_y + M5_STRAP_W / 2, MET5)
+    # top plate (all met4, no met5): stub from the PCell top contact C1 up past the cap edge, then a strap
+    # from cell edge to cell edge above the cap; the PCell's met4 C2 strip (bottom plate) is never crossed
+    c1x = plan.cap_cx + plan.c1_dx
+    rect(c1x - C1_STUB_W / 2, plan.cap_cy, c1x + C1_STUB_W / 2, plan.strap_y, MET4)
+    rect(0, plan.strap_y - STRAP_W / 2, W, plan.strap_y + STRAP_W / 2, MET4)
     # body taps above the rails: p-tap on the NMOS side, n-tap on the PMOS side
     tap = via_stack(sky130, "active_tap", "met2")
     for tx, net, imp in ((plan.xc[0], "vss", PSDM), (plan.xc[3], "vdd", NSDM)):
@@ -195,7 +198,7 @@ def build_unit_cell(design, rails, gates, name="cdac_unit"):
     lines = draw_cell(top, plan, 0.0, 0.0, False, rails, gates, "u", design)
     for net, y in list(zip(rails, plan.ctrl_y)) + list(plan.sup_y.items()):
         _pin(top, net, 0.0, y, MET2)
-    _pin(top, "top", 0.0, plan.strap_y, MET5)
+    _pin(top, "top", 0.0, plan.strap_y, MET4)
     top = top.flatten()
     top.name = name
     pins = ["top"] + list(dict.fromkeys(list(plan.sup_y) + rails))
@@ -226,7 +229,7 @@ def build_abut_test(design, rails, gate_maps, cols=2, rows=2, name="cdac_unit_2x
     for r in range(rows):
         for net, y in list(zip(rails, plan.ctrl_y)) + list(plan.sup_y.items()):
             _pin(top, net, 0.0, r * plan.H + y, MET2)
-    _pin(top, "top", 0.0, plan.strap_y, MET5)
+    _pin(top, "top", 0.0, plan.strap_y, MET4)
     top = top.flatten()
     top.name = name
     pins = ["top"] + list(dict.fromkeys(list(plan.sup_y) + rails))

@@ -84,12 +84,13 @@ TEST_GATES = [dict(en="phig", enb="phigb", pg="pg_0", ng="ng_0"), dict(en="phis"
               dict(en="phig", enb="phigb", pg="pg_1", ng="ng_1"), dict(en="phis", enb="phisb", pg="pg_0", ng="ng_0")]
 
 
-def do_unit(bits, out, abut=False):
+def do_unit(bits, out, abut=False, rows=2, cols=2):
     from sargen.layout import unitcell
     design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
     t0 = time.time()
     if abut:
-        comp, plan, ref_txt = unitcell.build_abut_test(design, TEST_RAILS, TEST_GATES)
+        comp, plan, ref_txt = unitcell.build_abut_test(design, TEST_RAILS, TEST_GATES, cols=cols, rows=rows,
+                                                       name=f"cdac_unit_{rows}x{cols}")
     else:
         comp, plan, ref_txt = unitcell.build_unit_cell(design, TEST_RAILS, TEST_GATES[0])
     gds = out / f"{comp.name}.gds"
@@ -123,7 +124,7 @@ def do_cdacu(bits, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unit2x2", "cdacu"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unit1x2", "unit2x2", "cdacu"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--no-verify", action="store_true")
     a = ap.parse_args()
@@ -131,7 +132,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     gds, ref, cell, info = {"cdac": do_cdac, "comparator": do_comparator, "switches": do_switches,
                             "cdacsw": do_cdacsw, "unitcell": do_unit,
-                            "unit2x2": lambda b, o: do_unit(b, o, abut=True), "cdacu": do_cdacu}[a.block](a.bits, out)
+                            "unit2x2": lambda b, o: do_unit(b, o, abut=True),
+                            "unit1x2": lambda b, o: do_unit(b, o, abut=True, rows=1, cols=2), "cdacu": do_cdacu}[a.block](a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")
