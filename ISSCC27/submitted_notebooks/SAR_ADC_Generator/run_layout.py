@@ -31,15 +31,33 @@ def do_cdac(bits, out):
     return gds, ref, comp.name, info
 
 
+def do_comparator(bits, out):
+    from sargen import SarSpec
+    from sargen import netlist as nl
+    from sargen.layout import cell
+    design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
+    t0 = time.time()
+    nrow, prow = cell.strongarm_devices(design["cmp"])
+    comp, info = cell.build_cell("strongarm", nrow, prow, cell.STRONGARM_PINS)
+    gds = out / "strongarm.gds"
+    comp.write_gds(gds)
+    info["gen_s"] = time.time() - t0
+    ref = out / "strongarm_ref.spice"
+    ref.write_text(nl.strongarm_subckt(design["cmp"]) + "\n")
+    print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.1f} x {info['height']:.1f} um, "
+          f"channels {info['channels']}")
+    return gds, ref, "strongarm", info
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac"])
+    ap.add_argument("block", choices=["cdac", "comparator"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--no-verify", action="store_true")
     a = ap.parse_args()
     out = Path(f"build/{a.bits}bit/layout")
     out.mkdir(parents=True, exist_ok=True)
-    gds, ref, cell, info = do_cdac(a.bits, out)
+    gds, ref, cell, info = (do_cdac if a.block == "cdac" else do_comparator)(a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")

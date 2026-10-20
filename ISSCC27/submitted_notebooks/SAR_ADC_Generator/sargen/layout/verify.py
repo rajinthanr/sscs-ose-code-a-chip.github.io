@@ -42,7 +42,8 @@ def drc_klayout(gds, outdir) -> dict:
           "-rd", f"report={rpt}", "-rd", "feol=true", "-rd", "beol=true", "-rd", "offgrid=true",
           "-rd", "floating_met=false", "-rd", "seal=false"])
     txt = rpt.read_text() if rpt.exists() else ""
-    cats = re.findall(r"<item><tags/><category>'?([^<']*)", txt)
+    cats = [re.search(r"<category>'?([^<']*)", it).group(1)
+            for it in re.findall(r"<item>(.*?)</item>", txt, re.S)]
     rules = {}
     for c in cats:
         rules[c] = rules.get(c, 0) + 1
