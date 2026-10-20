@@ -47,6 +47,7 @@ class Dev:
     s: str
     fingers: int = 0      # 0 = auto: 2 fingers if each can be >= 0.42 um wide, else 1
     flavor: str = "std"   # "std" or "lvt"
+    tie: bool = True      # gLayout tap ring around the device (False: caller provides shared taps)
     ref: object = field(default=None, repr=False)
 
 
@@ -76,7 +77,7 @@ def _make_device(dv):
     if not dv.fingers:
         dv.fingers = 2 if dv.w / 2 >= 0.42 else 1
     comp = fn(sky130, width=snap(dv.w / dv.fingers), length=dv.l, fingers=dv.fingers, with_dummy=False,
-              with_tie=True, with_substrate_tap=False, sd_route_topmet="met2", gate_route_topmet="met2", **kw)
+              with_tie=dv.tie, with_substrate_tap=False, sd_route_topmet="met2", gate_route_topmet="met2", **kw)
     if dv.flavor == "lvt":
         # magic types a transistor inside the cell that holds its diffusion/poly, so the lvtn implant must be
         # in that same cell: flatten the device and add lvtn over its diffusion (+0.18 um enclosure)
