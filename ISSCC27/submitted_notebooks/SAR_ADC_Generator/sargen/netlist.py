@@ -53,6 +53,18 @@ def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
 
 
 # ---------------------------------------------------------------- SAR core
+def load_strongarm_extraction(path) -> str:
+    """Flat magic extraction (devices + parasitic C) wrapped as the `strongarm` subcircuit.
+
+    Layout pin labels carry the port names; unlabelled internal nets keep magic's names."""
+    body = []
+    for ln in open(path).read().splitlines():
+        t = ln.split("**")[0].strip()          # drop magic's '**FLOATING' annotations
+        if t and t[0] in "XCR":
+            body.append(t)
+    return "\n".join([".subckt strongarm inp inn clk qp qn vdd vss"] + body + [".ends strongarm"])
+
+
 def load_cdac_extraction(path, bits) -> list[str]:
     """Extracted CDAC (magic, with parasitics) mapped onto the testbench nets.
 
@@ -223,7 +235,8 @@ class Timing:
 
 
 def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=False,
-                  cp_top=0.0, save=None, power=True, logic="cells", cap_values=None, cdac_lines=None) -> str:
+                  cp_top=0.0, save=None, power=True, logic="cells", cap_values=None, cdac_lines=None,
+                  cmp_subckt=None) -> str:
     """Full transient testbench with `n_conv` conversions (+1 leading dummy conversion)."""
     tim = Timing(spec.bits, spec.tclk)
     tstop = (n_conv + 1) * tim.tconv
@@ -240,7 +253,7 @@ def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=Fa
 {f".include {STDCELL_SPICE}" if logic == "cells" else ""}
 .temp {spec.temp}
 .option method=gear
-{strongarm_subckt(design['cmp'])}
+{cmp_subckt or strongarm_subckt(design['cmp'])}
 Vdd vdd 0 {spec.vdd}
 Vref vref 0 {spec.vref}
 Vcm vcm 0 {spec.vcm}

@@ -49,15 +49,30 @@ def do_comparator(bits, out):
     return gds, ref, "strongarm", info
 
 
+def do_switches(bits, out):
+    from sargen.layout import cell
+    design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
+    t0 = time.time()
+    nrow, prow, pins = cell.switch_devices(design, bits)
+    comp, info = cell.build_cell("switches", nrow, prow, pins)
+    gds = out / "switches.gds"
+    comp.write_gds(gds)
+    info["gen_s"] = time.time() - t0
+    ref = out / "switches_ref.spice"
+    ref.write_text(cell.reference_netlist("switches", nrow, prow, pins))
+    print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.1f} x {info['height']:.1f} um")
+    return gds, ref, "switches", info
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--no-verify", action="store_true")
     a = ap.parse_args()
     out = Path(f"build/{a.bits}bit/layout")
     out.mkdir(parents=True, exist_ok=True)
-    gds, ref, cell, info = (do_cdac if a.block == "cdac" else do_comparator)(a.bits, out)
+    gds, ref, cell, info = {"cdac": do_cdac, "comparator": do_comparator, "switches": do_switches}[a.block](a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")

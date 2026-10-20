@@ -45,17 +45,53 @@ class Dev:
     d: str
     g: str
     s: str
-    fingers: int = 2
+    fingers: int = 0      # 0 = auto: 2 fingers if each can be >= 0.42 um wide, else 1
     flavor: str = "std"   # "std" or "lvt"
     ref: object = field(default=None, repr=False)
+
+
+def model_name(dv):
+    from ..pdk import TG_FLAVORS, NFET, PFET
+    if dv.flavor == "lvt":
+        nm, _, pm, _ = TG_FLAVORS["lvt"]
+        return nm if dv.kind == "n" else pm
+    return NFET if dv.kind == "n" else PFET
+
+
+def reference_netlist(name, nrow, prow, pins, body=("vss", "vdd")):
+    """LVS reference written from the same device list that was drawn."""
+    from ..pdk import mos
+    lines = [f".subckt {name} {' '.join(pins)}"]
+    for dv in nrow + prow:
+        b = body[0] if dv.kind == "n" else body[1]
+        lines.append(mos(dv.name, dv.d, dv.g, dv.s, b, model_name(dv), dv.w, dv.l))
+    lines.append(f".ends {name}")
+    return "\n".join(lines) + "\n"
 
 
 def _make_device(dv):
     from glayout import nmos, pmos, sky130
     fn = nmos if dv.kind == "n" else pmos
     kw = dict(with_dnwell=False) if dv.kind == "n" else {}
-    return fn(sky130, width=snap(dv.w / dv.fingers), length=dv.l, fingers=dv.fingers, with_dummy=False,
+    if not dv.fingers:
+        dv.fingers = 2 if dv.w / 2 >= 0.42 else 1
+    comp = fn(sky130, width=snap(dv.w / dv.fingers), length=dv.l, fingers=dv.fingers, with_dummy=False,
               with_tie=True, with_substrate_tap=False, sd_route_topmet="met2", gate_route_topmet="met2", **kw)
+    if dv.flavor == "lvt":
+        # magic types a transistor inside the cell that holds its diffusion/poly, so the lvtn implant must be
+        # in that same cell: flatten the device and add lvtn over its diffusion (+0.18 um enclosure)
+        from gdsfactory.components import rectangle
+        comp = comp.flatten()
+        xs, ys = [], []
+        for poly in comp.get_polygons(by_spec=DIFF):
+            xs += [pt[0] for pt in poly]
+            ys += [pt[1] for pt in poly]
+        x0, y0, x1, y1 = min(xs) - 0.18, min(ys) - 0.18, max(xs) + 0.18, max(ys) + 0.18
+        r = comp << rectangle(size=(snap(x1 - x0), snap(y1 - y0)), layer=LVTN)
+        r.move((snap(x0), snap(y0)))
+        comp = comp.flatten()
+        comp.name = f"{dv.name}_lvt"
+    return comp
 
 
 def build_cell(name, nrow, prow, pins, body=("vss", "vdd")):
@@ -116,7 +152,15 @@ def build_cell(name, nrow, prow, pins, body=("vss", "vdd")):
             gx = sorted([p["multiplier_0_gate_W"].center[0], p["multiplier_0_gate_E"].center[0]])
             ys, yd, yg = p["multiplier_0_source_W"].center[1], p["multiplier_0_drain_W"].center[1], p["multiplier_0_gate_W"].center[1]
             sd_ch, g_ch = ("Bn", "A") if dv.kind == "n" else ("Bp", "C")
-            # source stub at the left end of its bar, drain stub at the right end
+            # source stub at the left end of its bar, drain stub at the right end; short (single-finger)
+            # bars are extended in met1 (the tap ring sides are li1) so the two stubs stay >= 1 um apart
+            xc = ref.center[0]
+            if sx[0] > xc - 0.9:
+                rect(xc - 0.9, ys - 0.145, sx[0] + 0.1, ys + 0.145, MET1)
+                sx[0] = xc - 0.9
+            if dxs[1] < xc + 0.9:
+                rect(dxs[1] - 0.1, yd - 0.145, xc + 0.9, yd + 0.145, MET1)
+                dxs[1] = xc + 0.9
             terms.append((sd_ch, snap(sx[0] + M1_PAD_X / 2 + 0.02), ys, dv.s, dv.name))
             terms.append((sd_ch, snap(dxs[1] - M1_PAD_X / 2 - 0.02), yd, dv.d, dv.name))
             terms.append((g_ch, snap((gx[0] + gx[1]) / 2), yg, dv.g, dv.name))
@@ -125,9 +169,6 @@ def build_cell(name, nrow, prow, pins, body=("vss", "vdd")):
             tx = snap(tie.center[0] + 1.0)
             ty = tie.center[1] + (0.205 if dv.kind == "n" else -0.205)
             terms.append((g_ch, tx, ty, body[0] if dv.kind == "n" else body[1], dv.name))
-            if dv.flavor == "lvt":
-                bb = ref.bbox
-                rect(bb[0][0] + 0.75, bb[0][1] + 0.75, bb[1][0] - 0.75, bb[1][1] - 0.75, LVTN)
 
     # channel nets decide channel heights
     chan_nets = {"A": [], "Bn": [], "Bp": [], "C": []}
@@ -223,3 +264,29 @@ def strongarm_devices(c):
 
 
 STRONGARM_PINS = ["inp", "inn", "clk", "qp", "qn", "vdd", "vss"]
+
+
+def switch_devices(design, bits):
+    """Bottom-plate switches of every bit (LVT input TG + binary-scaled Vref/GND drivers), the termination-cap
+    switches and the top-plate TG.  Bit i uses 2^i times the unit sizes; MSB samples on phis, others on phig."""
+    sw, drv, fl = design["sw"], design["drv"], design["sw"].get("flavor", "std")
+    from ..pdk import TG_FLAVORS
+    ln, lp = TG_FLAVORS[fl][1], TG_FLAVORS[fl][3]
+    L = 0.15
+    nrow, prow = [], []
+    for i in reversed(range(bits)):                 # MSB on the left
+        m = 2**i
+        en, enb = ("phis", "phisb") if i == bits - 1 else ("phig", "phigb")
+        nrow += [Dev(f"Msn{i}", "n", sw["in_wn"] * m, ln, f"bot_{i}", en, "vin", flavor=fl),
+                 Dev(f"Mdn{i}", "n", drv["wn"] * m, L, f"bot_{i}", f"ng_{i}", "vss")]
+        prow += [Dev(f"Msp{i}", "p", sw["in_wp"] * m, lp, f"bot_{i}", enb, "vin", flavor=fl),
+                 Dev(f"Mdp{i}", "p", drv["wp"] * m, L, f"bot_{i}", f"pg_{i}", "vref")]
+    nrow += [Dev("Msnd", "n", sw["in_wn"], ln, "botd", "phig", "vin", flavor=fl),
+             Dev("Mddn", "n", drv["wn"], L, "botd", "phigb", "vss"),
+             Dev("Mttn", "n", sw["top_wn"], ln, "top", "phit", "vcm", flavor=fl)]
+    prow += [Dev("Mspd", "p", sw["in_wp"], lp, "botd", "phigb", "vin", flavor=fl),
+             Dev("Mttp", "p", sw["top_wp"], lp, "top", "phitb", "vcm", flavor=fl)]
+    pins = ([f"bot_{i}" for i in range(bits)] + ["botd", "top", "vin", "vcm", "vref", "vdd", "vss",
+            "phis", "phisb", "phig", "phigb", "phit", "phitb"] + [f"pg_{i}" for i in range(bits)]
+            + [f"ng_{i}" for i in range(bits)])
+    return nrow, prow, pins
