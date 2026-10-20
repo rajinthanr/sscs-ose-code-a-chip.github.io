@@ -286,7 +286,5 @@ def switch_devices(design, bits):
              Dev("Mttn", "n", sw["top_wn"], ln, "top", "phit", "vcm", flavor=fl)]
     prow += [Dev("Mspd", "p", sw["in_wp"], lp, "botd", "phigb", "vin", flavor=fl),
              Dev("Mttp", "p", sw["top_wp"], lp, "top", "phitb", "vcm", flavor=fl)]
-    pins = ([f"bot_{i}" for i in range(bits)] + ["botd", "top", "vin", "vcm", "vref", "vdd", "vss",
-            "phis", "phisb", "phig", "phigb", "phit", "phitb"] + [f"pg_{i}" for i in range(bits)]
-            + [f"ng_{i}" for i in range(bits)])
-    return nrow, prow, pins
+    from ..netlist import switch_pins
+    return nrow, prow, switch_pins(bits)

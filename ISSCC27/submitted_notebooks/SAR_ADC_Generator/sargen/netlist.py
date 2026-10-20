@@ -53,8 +53,8 @@ def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
 
 
 # ---------------------------------------------------------------- SAR core
-def load_strongarm_extraction(path) -> str:
-    """Flat magic extraction (devices + parasitic C) wrapped as the `strongarm` subcircuit.
+def wrap_extraction(path, name, pins) -> str:
+    """Flat magic extraction (devices + parasitic C) wrapped as subcircuit `name` with `pins`.
 
     Layout pin labels carry the port names; unlabelled internal nets keep magic's names."""
     body = []
@@ -62,7 +62,18 @@ def load_strongarm_extraction(path) -> str:
         t = ln.split("**")[0].strip()          # drop magic's '**FLOATING' annotations
         if t and t[0] in "XCR":
             body.append(t)
-    return "\n".join([".subckt strongarm inp inn clk qp qn vdd vss"] + body + [".ends strongarm"])
+    return "\n".join([f".subckt {name} {' '.join(pins)}"] + body + [f".ends {name}"])
+
+
+def load_strongarm_extraction(path) -> str:
+    return wrap_extraction(path, "strongarm", ["inp", "inn", "clk", "qp", "qn", "vdd", "vss"])
+
+
+def switch_pins(bits):
+    """Pin order of the `switches` layout cell (same as sargen.layout.cell.switch_devices)."""
+    return ([f"bot_{i}" for i in range(bits)] + ["botd", "top", "vin", "vcm", "vref", "vdd", "vss",
+            "phis", "phisb", "phig", "phigb", "phit", "phitb"] + [f"pg_{i}" for i in range(bits)]
+            + [f"ng_{i}" for i in range(bits)])
 
 
 def load_cdac_extraction(path, bits) -> list[str]:
@@ -82,7 +93,8 @@ def load_cdac_extraction(path, bits) -> list[str]:
     return out
 
 
-def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac_lines=None) -> str:
+def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac_lines=None,
+             sw_extracted=False) -> str:
     """CDAC + switches + comparator (transistor level).
 
     cap_values: optional list of 2^N ideal capacitances (bit-major, dummy last) replacing the MIM
@@ -91,10 +103,14 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
     def cap(name, top, bot):
         return f"C{name} {top} {bot} {next(caps):.6g}" if caps else mim(name, top, bot, cu["side"], cu["side"])
     cu, sw, drv, L = design["cu"], design["sw"], design["drv"], design["l_sw"]
-    out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm",
-           "* ---- top-plate sampling switch (to vcm)"]
+    out = ["* ---- comparator", "Xcmp top vcm clk qp qn vdd 0 strongarm"]
     fl = sw.get("flavor", "std")
-    out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
+    if sw_extracted:
+        out += ["* ---- switch array from layout extraction",
+                "Xsw " + " ".join("0" if p == "vss" else p for p in switch_pins(bits)) + " switches"]
+    else:
+        out.append("* ---- top-plate sampling switch (to vcm)")
+        out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
     for i in range(bits):
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
@@ -104,17 +120,19 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
         # MSB stops tracking at phis and goes to Vref; the other plates keep tracking Vin until phig,
         # so the top plate moves to Vcm + (Vref - Vin)/2 first and never leaves [0, Vref]
         en, enb = ("phis", "phisb") if i == bits - 1 else ("phig", "phigb")
-        out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", en, enb, sw["in_wn"], sw["in_wp"], fl, m)
-        out.append(mos(f"Mdp{i}", f"bot_{i}", f"pg_{i}", "vref", "vdd", PFET, drv["wp"], L, m))
-        out.append(mos(f"Mdn{i}", f"bot_{i}", f"ng_{i}", "0", "0", NFET, drv["wn"], L, m))
+        if not sw_extracted:
+            out += tg_lines(f"Ms{i}", f"bot_{i}", "vin", en, enb, sw["in_wn"], sw["in_wp"], fl, m)
+            out.append(mos(f"Mdp{i}", f"bot_{i}", f"pg_{i}", "vref", "vdd", PFET, drv["wp"], L, m))
+            out.append(mos(f"Mdn{i}", f"bot_{i}", f"ng_{i}", "0", "0", NFET, drv["wn"], L, m))
     out.append("* ---- dummy (termination) unit cap: samples vin, then grounded")
     if cdac_lines is None:
         out.append(cap("d", "top", "botd"))
     else:
         out.append("* ---- CDAC from layout extraction (MIM devices + parasitic C)")
         out += cdac_lines
-    out += tg_lines("Msd", "botd", "vin", "phig", "phigb", sw["in_wn"], sw["in_wp"], fl)
-    out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
+    if not sw_extracted:
+        out += tg_lines("Msd", "botd", "vin", "phig", "phigb", sw["in_wn"], sw["in_wp"], fl)
+        out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
     if cp_top > 0:
         out.append(f"Cptop top 0 {cp_top:.4g}")
     return "\n".join(out)
@@ -236,7 +254,7 @@ class Timing:
 
 def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=False,
                   cp_top=0.0, save=None, power=True, logic="cells", cap_values=None, cdac_lines=None,
-                  cmp_subckt=None) -> str:
+                  cmp_subckt=None, sw_subckt=None) -> str:
     """Full transient testbench with `n_conv` conversions (+1 leading dummy conversion)."""
     tim = Timing(spec.bits, spec.tclk)
     tstop = (n_conv + 1) * tim.tconv
@@ -254,12 +272,13 @@ def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=Fa
 .temp {spec.temp}
 .option method=gear
 {cmp_subckt or strongarm_subckt(design['cmp'])}
+{sw_subckt or ''}
 Vdd vdd 0 {spec.vdd}
 Vref vref 0 {spec.vref}
 Vcm vcm 0 {spec.vcm}
 {vin_line}
 {tim.sources(spec.vdd)}
-{sar_core(design, spec.bits, cp_top, cap_values, cdac_lines)}
+{sar_core(design, spec.bits, cp_top, cap_values, cdac_lines, sw_extracted=bool(sw_subckt))}
 {sar_logic_cells(spec.bits) if logic == "cells" else sar_logic(spec.bits, spec.vdd)}
 .save {' '.join(save)} i(vdd) i(vref) i(vcm)
 .tran {spec.tclk / 100:.4g} {tstop:.6g} 0 {spec.tclk / 25:.4g}
