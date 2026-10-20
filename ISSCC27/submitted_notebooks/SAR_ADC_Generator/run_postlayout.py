@@ -36,7 +36,13 @@ def main():
     if (pex_dir / f"cdacu{a.bits}b_pex.spice").exists():
         pins = nl.subckt_pins(lay / f"cdacu{a.bits}b_ref.spice", f"cdacu{a.bits}b")
         cdacu = dict(cdacsw=(nl.wrap_extraction(pex_dir / f"cdacu{a.bits}b_pex.spice", "cdacsw", pins), pins))
-    cases = [("schematic", {}), ("extracted CDAC", cdac), ("extracted comparator", cmp_),
+    core = {}
+    if (pex_dir / f"sar{a.bits}b_core_pex.spice").exists():
+        cname = f"sar{a.bits}b_core"
+        from sargen.layout.core import core_pins            # flat extraction, ports from the pin labels
+        pins = core_pins(a.bits)
+        core = dict(core=(nl.wrap_extraction(pex_dir / f"{cname}_pex.spice", cname, pins), pins, cname))
+    cases = [("schematic", {}), ("full core from layout", core), ("extracted CDAC", cdac), ("extracted comparator", cmp_),
              ("unit-cell CDAC", cdacu), ("unit-cell CDAC + comparator", {**cdacu, **cmp_}),
              ("compact CDAC+switches", cdacsw), ("compact CDAC+switches + comparator", {**cdacsw, **cmp_}),
              ("extracted switches", sw), ("all blocks extracted", {**cdac, **cmp_, **sw})]
