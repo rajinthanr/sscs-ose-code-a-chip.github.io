@@ -123,6 +123,29 @@ def do_topsw(bits, out):
     return gds, ref, comp.name, info
 
 
+def do_sarlogic(bits, out):
+    import shutil
+    from sargen.layout import sarlogic
+    from sargen.pdk import STDCELL_SPICE
+    t0 = time.time()
+    g = sarlogic.harden(bits, out / "sarlogic")
+    gds = out / "sar_logic.gds"
+    shutil.copy(g, gds)
+    v, ins, outs = sarlogic.sar_logic_verilog(bits)
+    ref = out / "sar_logic_ref.spice"
+    nl_v = sorted((g.parent.parent / "nl").glob("*.nl.v"))
+    ref.write_text(sarlogic.reference_spice(bits, STDCELL_SPICE, physical_netlist=nl_v[0] if nl_v else None))
+    m = json.loads((g.parent.parent / "metrics.json").read_text())
+    info = dict(gen_s=time.time() - t0, die_um2=m["design__die__area"], util=m["design__instance__utilization"],
+                librelane_drc=(m["magic__drc_error__count"], m["klayout__drc_error__count"]),
+                librelane_lvs=m["design__lvs_error__count"], antenna=m["antenna__violating__nets"])
+    bb = __import__("gdstk").read_gds(gds).top_level()[0].bounding_box()
+    info.update(width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]))
+    print(f"generated {gds} in {info['gen_s']:.0f} s: {info['width']:.1f} x {info['height']:.1f} um, "
+          f"utilization {info['util']:.2f}, LibreLane DRC {info['librelane_drc']} LVS {info['librelane_lvs']}")
+    return gds, ref, "sar_logic", info
+
+
 def do_cdacu(bits, out):
     from sargen.layout import unitcell
     design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
@@ -142,7 +165,7 @@ def do_cdacu(bits, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw", "sarlogic"])
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--rows", type=int, default=2, help="unitabut: rows of abutted unit cells")
     ap.add_argument("--cols", type=int, default=3, help="unitabut: columns (alternate columns mirrored)")
@@ -153,7 +176,8 @@ def main():
     gds, ref, cell, info = {"cdac": do_cdac, "comparator": do_comparator, "switches": do_switches,
                             "cdacsw": do_cdacsw, "unitcell": do_unit,
                             "unitabut": lambda b, o: do_unit(b, o, a.rows, a.cols),
-                            "cdacu": do_cdacu, "topsw": do_topsw}[a.block](a.bits, out)
+                            "cdacu": do_cdacu, "topsw": do_topsw,
+                            "sarlogic": do_sarlogic}[a.block](a.bits, out)
     if not a.no_verify:
         t = time.time()
         info["drc_klayout"] = verify.drc_klayout(gds, out / "drc")
