@@ -43,9 +43,8 @@ def do_comparator(bits, out):
     info["gen_s"] = time.time() - t0
     ref = out / "strongarm_ref.spice"
     from sargen.pdk import NFET, mos
-    w, l = info["dummy"]                         # input-pair dummies (all terminals on tail) are in the layout
-    sub = nl.strongarm_subckt(design["cmp"]).replace(
-        ".ends strongarm", "\n".join(mos(f"Md{i}", "tail", "tail", "tail", "vss", NFET, w, l) for i in (1, 2))
+    sub = nl.strongarm_subckt(design["cmp"]).replace(   # layout dummies (shorted, symmetric) for LVS
+        ".ends strongarm", "\n".join(mos(n, d, g, s_, "vss", NFET, w, l) for n, d, g, s_, w, l in info["dummies"])
         + "\n.ends strongarm")
     ref.write_text(sub + "\n")
     print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.2f} x {info['height']:.2f} um, "

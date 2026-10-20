@@ -11,8 +11,8 @@ simulation in ngspice.
 | Block | First generator | Current generator | Change | Verification |
 |---|---|---|---|---|
 | CDAC unit cell (2x2 um MIM + own 4 switches) | 98.1 um² (PCell cap beside gLayout FETs) | 17.5 um² (4.88 x 3.58 um) | -82 % | DRC 0 / 0, LVS match, capm.10 clean |
-| 4-bit CDAC, per-unit switches | 2575 um² (54.1 x 47.6 um) | 460 um² (26.9 x 17.1 um) | -82 % | DRC 0 / 0, LVS 80 devices |
-| 8-bit CDAC | 8294 um² (2.7 um cap, 12 rails / row) | 5373 um² (89.4 x 60.1 um, same cell as 4-bit) | -35 % | DRC 0 / 0, LVS 1280 devices |
+| 4-bit CDAC, per-unit switches | 2575 um² (54.1 x 47.6 um) | 460 um² (26.9 x 17.1 um); 875 um² (36.0 x 24.3 um) with the dummy-cap ring | -82 % / -66 % | DRC 0 / 0, LVS 80 devices + ring |
+| 8-bit CDAC | 8294 um² (2.7 um cap, 12 rails / row) | 5373 um² (89.4 x 60.1 um, same cell as 4-bit); 6626 um² with the dummy-cap ring | -35 % / -20 % | DRC 0 / 0, LVS 1280 devices + ring |
 | StrongARM comparator | 1671 um² (50.8 x 32.9 um) | 73 um² (8.27 x 8.79 um) with dummies and guard rings | -96 % | DRC 0 / 0, LVS match |
 
 Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level): ENOB 3.97, max DNL
@@ -122,8 +122,6 @@ Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level):
 - **Leakage on the floating top plate.** The schematic PVT sweep degrades only at hot fast-NMOS corners:
   fs / 125 C gives DNL 0.24, INL 0.28, offset -0.40 LSB, and power doubles. The suspected cause is leakage
   through the LVT switches; a standard-Vt top-plate switch is the candidate fix.
-- **CDAC dummy ring** for etch/edge effects. Extraction does not model these. The proposed rule is to add
-  the ring for 6 bits and up: about +27 % area at 8 bits, against +94 % at 4 bits.
 - **8-bit comparator.** Its latch devices (16.6 um) need multi-finger support in the comparator generator.
 - **Remaining blocks:** SAR logic layout, top-level assembly, TinyTapeout pins.
 - **Post-layout PVT + Monte Carlo** of the full core.
@@ -137,15 +135,15 @@ Everything else is practice, worth its area only where an error budget needs it 
 
 | Block | Dummies | Guard ring | Priority | SARGen now |
 |---|---|---|---|---|
-| CDAC MIM array | ring of grounded dummy unit caps (edge etch / density) | none (metal stack) | optional at 4 bits (+94 % area), should at 8 bits (+27 %) | none: proposed as a generator option for >= 6 bits |
+| CDAC MIM array | ring of grounded dummy unit caps (edge etch / density) | none (metal stack) | optional at 4 bits, should at 8 bits | done for every resolution: one ring at unit-cell pitch (mirrored like the real columns), plates shorted on met4 and tied to vss by a met3 ring (+90 % area at 4 bits, +23 % at 8 bits) |
 | CDAC per-unit switches | none (no ratio matching) | no ring; taps within 15 um | taps must | p-taps / n-taps on the cell edges, shared |
 | Top-plate sampling switch | optional half-size charge-injection dummies (circuit) | p+ ring to a quiet ground (its diffusion is the floating top plate's only junction) | should | not laid out yet |
 | Comparator input pair | end dummies | p+ ring with the tail | must / should | done: dummy fingers + p-tap ring |
-| Comparator latch NMOS | end dummies (mismatch / 4 at the input) | same p+ ring | should | inside the p-tap ring; no dummies yet |
+| Comparator latch NMOS | end dummies (mismatch / 4 at the input) | same p+ ring | should | done: outer dummy finger per side (gate on the latch gate net, diffusions on the output node), no extra area |
 | Comparator latch / reset PMOS | optional (mismatch / 10) | n+ ring | n-tap must, ring should | n-tap ring done |
 | Output inverters | balance the loads on qp / qn | taps | should | symmetric, equal loads |
 | SAR logic (hd cells) | none | none; tap cells every 13 um (`FP_TAPCELL_DIST`), decaps, a p+ strip toward the comparator | taps must | not laid out yet |
-| Vref / clock lines | grounded shield tracks between clock and the top plate / comparator P, Q nodes | n/a | should | clock kept on its own tracks, away from inputs |
+| Vref / clock lines | grounded shield tracks between clock and the top plate / comparator P, Q nodes | n/a | should | comparator clock tracks sit at the cell's top and bottom edges, two device rows from xp / xn and the outputs, so there is no parallel run to shield; extracted clk coupling xp / xn 50.4 / 50.8 aF, inp / inn 110.9 / 110.9 aF, outp / outn 171 / 164 aF |
 
 TinyTapeout: met5 forbidden; the analog pin path is < 500 ohm and < 5 pF; ~20 mA gives ~0.1 V drop through
 the power grid, so decouple vref on chip and give the analog ground its own branch from VGND. Substrate

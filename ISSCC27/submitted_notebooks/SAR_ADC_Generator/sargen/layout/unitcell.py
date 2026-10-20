@@ -402,15 +402,31 @@ def _tie_supplies(rect, plan, cols, rows, vin_x):
     return pins
 
 
-def _top_bar(rect, plan, cols):
-    """Top-plate straps -> met4 bar below the block, where the nearest caps (bottom row) are > 1.5 um away;
+def _top_bar(rect, plan, cols, y_top=0.0):
+    """Top-plate straps -> met4 bar below the block (below y_top), where the nearest caps are > 1.5 um away;
     above the top row the bar would add ~0.2 fF of top-to-bottom-plate fringe to those units only."""
     W = plan.W
     xs = sorted({snap(c * W + (W if c % 2 else 0)) for c in range(cols)})
-    yb = -TOP_BAR_GAP - STRAP_W
+    yb = y_top - TOP_BAR_GAP - STRAP_W
     for x in xs:
         rect(x - STRAP_W / 2, yb, x + STRAP_W / 2, 0, MET4)
     rect(xs[0] - STRAP_W / 2, yb, xs[-1] + STRAP_W / 2, yb + STRAP_W, MET4)
+
+
+def _draw_dummy(top, plan, x0, y0, mirror):
+    """Dummy unit cap at a cell position: the PDK MIM PCell only, top and bottom plate shorted on met4 (C1 to
+    the C2 strip).  Returns the plate (met3) box in layout coordinates."""
+    W = plan.W
+    X = lambda x: x0 + (W - x if mirror else x)
+    capref = top << plan.unit
+    if mirror:
+        capref.mirror((0, 0), (0, 1))
+    capref.move((snap(X(plan.cap_cx)), snap(y0 + plan.cap_cy)))
+    m4 = _ext(plan.unit, MET4)
+    xa, xb = sorted((X(plan.cap_cx + plan.c1_x0), X(plan.cap_cx + m4[1])))
+    _poly(top, xa, y0 + plan.cap_cy - STUB_W / 2, xb, y0 + plan.cap_cy + STUB_W / 2, MET4)
+    px = sorted((X(plan.cap_cx + plan.cap_x0), X(plan.cap_cx + plan.cap_x1)))
+    return px[0], px[1], y0 + plan.cap_cy + plan.cap_y0, y0 + plan.cap_cy + plan.cap_y1
 
 
 def build_abut_test(design, rails, gate_maps, cols=3, rows=2, name="cdac_unit_2x3"):
@@ -527,7 +543,8 @@ def build_unit_array(design, bits, name=None, grid=None):
     common-centroid grid.  Each row carries only its own rails: the sample phase pair below the devices,
     its bits' pg/ng above (unused tracks are tied to vss).  Rails run out to met1 trunks, phases on the
     left and bit controls on the right; the vertical supply lines are tied by met2 bars below the array
-    and the top-plate straps by a met4 bar above it.  Returns (Component, info, reference netlist)."""
+    and the top-plate straps by a met4 bar below it.  A ring of dummy unit caps (on vss) surrounds the array.
+    Returns (Component, info, reference netlist)."""
     from gdsfactory import Component
 
     from ..pdk import MIM_MIN_SIDE
@@ -588,7 +605,7 @@ def build_unit_array(design, bits, name=None, grid=None):
     nets = list(dict.fromkeys(n for n, _ in rail_pos))
     left = ["vin"] + [n for n in PHASES if n in nets]
     right = sorted((n for n in nets if n not in left), key=lambda n: (n.split("_")[-1], n))
-    edge = max(plan.tap_half + R_M1_SP, STRAP_W / 2 + TRUNK_STRAP) + TRUNK_W / 2   # clear of p-tap and strap
+    edge = W + 0.3 + TRUNK_W / 2                  # outside the dummy-cap columns
     tx = {n: snap(-edge - i * TRUNK_PITCH) for i, n in enumerate(left)}
     tx.update({n: snap(Wa + edge + i * TRUNK_PITCH) for i, n in enumerate(right)})
     for n, y in rail_pos:
@@ -600,23 +617,46 @@ def build_unit_array(design, bits, name=None, grid=None):
         lo, hi = min(ys) - V1_M1[1] / 2, max(ys) + V1_M1[1] / 2
         rect(tx[n] - TRUNK_W / 2, lo, tx[n] + TRUNK_W / 2, hi, MET1)
         _pin(top, n, tx[n], hi - 0.2, MET1, (0.14, 0.3))
-    # vertical supply lines -> met2 bars below the array
+    # dummy-cap ring: one ring of unit-cell-pitch MIM caps (plates shorted, on vss) around the array, mirrored
+    # like the real columns, so every real unit sees real-unit neighbours (edge etch / density) on all sides
+    side = design["cu"]["side"]
+    ring = [(r, c) for r in (-1, R) for c in range(-1, C + 1)] + [(r, c) for r in range(R) for c in (-1, C)]
+    plates = {}
+    for k, (r, c) in enumerate(ring):
+        plates[(r, c)] = _draw_dummy(top, plan, c * W, (R - 1 - r) * H, c % 2 == 1)
+        lines.append(f"XCD_{k} vss vss sky130_fd_pr__cap_mim_m3_1 W={side} L={side} MF=1")
+    for (r, c), (x0_, x1_, y0_, y1_) in plates.items():      # met3 ring through the dummy plates
+        if (r, c + 1) in plates and r in (-1, R):
+            nx0 = plates[(r, c + 1)][0]
+            rect(x1_ - 0.1, (y0_ + y1_) / 2 - 0.5, nx0 + 0.1, (y0_ + y1_) / 2 + 0.5, MET3)
+        if (r + 1, c) in plates and c in (-1, C):
+            ny1 = plates[(r + 1, c)][3]
+            rect((x0_ + x1_) / 2 - 0.5, ny1 - 0.1, (x0_ + x1_) / 2 + 0.5, y0_ + 0.1, MET3)
+    # vertical supply lines -> met2 bars below the dummy row; the dummy ring drops onto the vss bar
+    yb0 = -H - 0.6
     for i, net in enumerate(LINES):
-        yb = -0.6 - i * SUP_BAR_PITCH
+        yb = yb0 - i * SUP_BAR_PITCH
         xs = sorted({snap(c * W + (W - plan.sup_x[net] if c % 2 else plan.sup_x[net])) for c in range(C)})
         for x in xs:
             rect(x - M1_LINE / 2, yb, x + M1_LINE / 2, 0, MET1)
             via1(x, yb)
+        if net == "vss":
+            x0_, x1_, y0_, y1_ = plates[(R, -1)]
+            xd = snap((x0_ + x1_) / 2)
+            rect(xd - M3_PAD / 2, yb - M3_PAD / 2, xd + M3_PAD / 2, y0_ + 0.1, MET3)
+            rect(xd - M2_PAD / 2, yb - M2_PAD / 2, xd + M2_PAD / 2, yb + M2_PAD / 2, MET2)
+            rect(xd - VIA / 2, yb - VIA / 2, xd + VIA / 2, yb + VIA / 2, VIA2)
+            xs = [xd] + xs
         rect(xs[0] - V1_M2[0] / 2, yb - SUP_BAR_W / 2, xs[-1] + V1_M2[0] / 2, yb + SUP_BAR_W / 2, MET2)
         _pin(top, net, xs[0] + 0.2, yb, MET2)
-    _top_bar(rect, plan, C)
-    _pin(top, "top", 0.0, -TOP_BAR_GAP - STRAP_W / 2, MET4)
+    _top_bar(rect, plan, C, y_top=-H)
+    _pin(top, "top", 0.0, -H - TOP_BAR_GAP - STRAP_W / 2, MET4)
 
     top = top.flatten()
     top.name = name
     pins = ["top"] + LINES + left + right
     bb = top.bbox
-    info = dict(bits=bits, grid=grid, cell=(W, H), rails_bot=bot_rows, rails_top=top_rows,
+    info = dict(bits=bits, grid=grid, cell=(W, H), rails_bot=bot_rows, rails_top=top_rows, dummies=len(ring),
                 ctrl_rails=n_bot + n_top, width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),
                 pins=pins)
     return top, info, _subckt(name, pins, lines)

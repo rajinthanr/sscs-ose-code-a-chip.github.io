@@ -4,7 +4,7 @@
     clk combs (reset gates) + clk track             clk risers (met3) on both edges
     [Mop1] [vdd Mp1 outn Mr1 vdd Mr3 xp] | mirror   PMOS: latch + reset share diffusion, output inverter outside
     outp / outn tracks, swapped on the axis         cross-coupling with equal parasitics on both outputs
-    [Mon1] [outn Mn1 xp]                 | mirror   NMOS latch, output inverter outside
+    [Mon1] [dmy outn Mn1 xp]             | mirror   NMOS latch with an outer dummy, output inverter outside
     dmy tail A xp A tail B xn B tail dmy            input pair, clustered (each drain an inner diffusion), dummies
     inp / inn tracks                                inputs leave sideways, away from clk and the outputs
     vss tail vss                                    clocked tail on the symmetry axis
@@ -167,7 +167,7 @@ def strongarm_rows(c):
     """Device rows of the StrongARM (left halves mirrored where the circuit is left/right symmetric)."""
     L, Lin = c["l"], c["l_in"]
     swap = {"inp": "inn", "xp": "xn", "outp": "outn", "qp": "qn", "Mon1": "Mon2", "Mn1": "Mn2",
-            "Mp1": "Mp2", "Mr1": "Mr2", "Mr3": "Mr4"}
+            "Mp1": "Mp2", "Mr1": "Mr2", "Mr3": "Mr4", "Mdl1": "Mdl2", "d_outn": "d_outp"}
     swap.update({v: k for k, v in list(swap.items())})
     sw = lambda n: swap.get(n, n.replace("Mop1", "Mop2") if n.startswith("Mop1") else
                                n.replace("Mop2", "Mop1") if n.startswith("Mop2") else n)
@@ -197,7 +197,10 @@ def strongarm_rows(c):
     inp.center()
     x_xp = min(x for x, n, _ in inp.bars("xp"))                   # outermost xp bar of the pair
     # NMOS latch (left): output-inverter NMOS outside, Mn1 with its xp bar above the pair's
+    # latch NMOS with an outer dummy finger: gate on Mn1's gate net (one shared gate contact), both
+    # diffusions on outn (its outer bar is tied to outn), so it only adds a mirror-symmetric load
     nl = Row([("Mon1", dev("Mon1", "n", c["w_inv_n"], L), "outp", "top", "qp", "vss"),
+              ("Mdl1", dev("Mdl", "n", c["w_ln"], L), "outp", "top", "d_outn", "outn"),
               ("Mn1", dev("Mn1", "n", c["w_ln"], L), "outp", "top", "outn", "xp")], align="top")
     nl.anchor("Mn1", "R", x_xp)
     # PMOS (left): output-inverter PMOS outside; latch Mp1 + reset Mr1 (both on outn) + reset Mr3 (on xp)
@@ -217,7 +220,9 @@ def strongarm_rows(c):
     mon = nl.by["Mon1"]
     assert x_q + mon["fe"].sd <= mon["x"] + 1e-6, "output inverter NMOS cannot sit under its PMOS"
     mon["x"] = x_q + mon["fe"].sd
-    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummy=(wi, Lin))
+    dummies = [("Md1", "tail", "tail", "tail", wi, Lin), ("Md2", "tail", "tail", "tail", wi, Lin),
+               ("Mdl1", "outn", "outp", "outn", c["w_ln"], L), ("Mdl2", "outp", "outn", "outp", c["w_ln"], L)]
+    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummies=dummies)
 
 
 def build_strongarm(c, name="strongarm"):
@@ -416,6 +421,14 @@ def build_strongarm(c, name="strongarm"):
         mcon(xn_, bar_y(fn_, yN, 1) - MC / 2)
         vline(xn_, bar_y(fn_, yN, 1) - MC, max(bar_y(f, yP, 0) for x, n, f in prow.bars(net)) + MC, MET1, M1_STUB)
         _pin(top, net, xn_, (y_lo + y_hi) / 2, MET1, (0.14, 0.3))
+    # latch-NMOS dummies: outer bar tied to the shared output bar (met1 across the band)
+    for nrow, d_net, o_net in ((nl, "d_outn", "outn"), (nr, "d_outp", "outp")):
+        (xd, _, fd), = nrow.bars(d_net)
+        xo = min((x for x, n, f in nrow.bars(o_net)), key=lambda x: abs(x - xd))
+        yb = yN + fd["dy"] + (fd["fe"].bar_y[0] + fd["fe"].bar_y[1]) / 2
+        for x in (xd, xo):
+            mcon(x, yb)
+        hline(yb, min(xd, xo), max(xd, xo), MET1, M1_STUB)
     # inverter NMOS sources -> vss rail (met1 down the side)
     for nrow in (nl, nr):
         for x, n, f in nrow.bars("vss"):
@@ -446,7 +459,7 @@ def build_strongarm(c, name="strongarm"):
     top.name = name
     bb = top.bbox
     info = dict(width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),
-                fingers=dict(tail=len(tail.f), inp=(len(inp.f) - 2) // 2), dummy=R["dummy"])
+                fingers=dict(tail=len(tail.f), inp=(len(inp.f) - 2) // 2), dummies=R["dummies"])
     return top, info
 
 
