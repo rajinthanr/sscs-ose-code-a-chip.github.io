@@ -44,7 +44,7 @@ R_NDIFF_NWELL, R_NWELL_PDIFF, R_LVT_GATE, R_LVTN_SP = 0.34, 0.18, 0.24, 0.38
 R_IMP_SP = 0.38                       # nsdm / psdm spacing: closer same-type implants are merged
 CAPM11 = 1.34                         # capm to unrelated met3
 VIA2_CAPM = 0.20                      # via2 clearance from a capm edge (magic capm.8)
-M3_SP = 0.30
+M3_SP, M3_SP_WIDE = 0.30, 0.40         # met3 spacing; to met3 wider than 3 um (m3.3d)
 TOP_BAR_GAP = 0.40                    # met4 top-plate bar below an array / test block
 
 
@@ -131,7 +131,9 @@ class UnitCellPlan:
         self.cap_cx = snap((CAPM11 - cm[0] - self.cap_x0) / 2 + 0.0025)
         cl, cr = self.cap_cx + cm[0], self.cap_cx + cm[1]                  # capm x-range in the cell
         self.capm_x = (cl, cr)
-        w_cap = self.cap_cx + self.cap_x1 + M3_SP / 2
+        # met3 spacing between the plates: 0.3 um, 0.4 um once a plate is wider than 3 um in both directions (m3.3d)
+        self.m3_sp = M3_SP_WIDE if min(self.cap_x1 - self.cap_x0, self.cap_y1 - self.cap_y0) > 3.0 else M3_SP
+        w_cap = self.cap_cx + self.cap_x1 + self.m3_sp / 2
 
         # x: Mdn | Msn | n-well: Msp | Mdp | vref line | vdd line.  Facing inner bars carry plate met1 pads
         cg = V1_M1[0] / 2 + R_M1_SP + M1_LINE / 2           # gate met1 pad centre -> supply line centre
@@ -215,7 +217,7 @@ class UnitCellPlan:
         dx = (CAPM11 ** 2 - dy ** 2) ** 0.5 if dy < CAPM11 else 0.0
         self.riser_x = snap(max(cr + VIA2_CAPM + VIA / 2, cr + dx + M3_PAD / 2) + 0.005)   # grid margin
         assert self.riser_x + M3_PAD / 2 <= self.cap_cx + self.cap_x1, "no room for the plate riser"
-        assert (P - M3_PAD / 2) - (self.cap_cy + self.cap_y1 - self.H) >= M3_SP, "riser too close to the plate below"
+        assert (P - M3_PAD / 2) - (self.cap_cy + self.cap_y1 - self.H) >= self.m3_sp, "riser too close to the plate below"
         self.tap = via_stack(sky130, "active_tap", "met2")
         tb_ = self.tap.bbox
         self.tap_half = max(abs(v) for v in (tb_[0][0], tb_[1][0], tb_[0][1], tb_[1][1]))
