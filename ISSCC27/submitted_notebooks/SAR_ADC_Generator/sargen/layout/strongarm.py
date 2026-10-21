@@ -29,9 +29,8 @@ from .unitcell import (LI, MC, MCON, NSDM, POLY, PSDM, R_DIFF_SP, R_IMP_SP, R_LI
                        R_POLY_SP, TAP, V1_M1, V1_M2, _ext, _Fet, _pin, _poly)
 
 NPC, LICON = (95, 20), (66, 44)
-WF_IN = 1.0             # input-pair finger width (2 fingers per device for the 4-bit sizing)
+WF_IN_MAX = 2.5         # input pair: 2 fingers per device up to this finger width, else common centroid
 WF_MAX = 2.0            # other devices: fingers no wider than this
-WF_TAIL = 0.75          # tail fingers (short tail row; the lower rows have width to spare)
 SPLIT = 0.34            # two contact bars instead of one shared bar (lets neighbouring gate pads sit on one side)
 R_NPC_SP = 0.27
 RAIL_W = 0.48           # vss / vdd rails (met1)
@@ -42,6 +41,8 @@ M1_STUB = 0.23          # met1 vertical stubs (mcon + 0.03)
 TRK = 0.26              # met2 track width (= via1 pad height, so vias sit flush in a track)
 TRK_IN = 0.14           # inp / inn / clk tracks
 XJ = 0.46               # output tracks swap between x = -XJ and +XJ
+IN_PITCH = 0.40         # common-centroid pair: inp / inn tracks below the comb level
+BAND_DY = 0.42          # extra met2 tracks over a diffusion band (xp / xn), off its centre (slim via2 fits)
 EXIT = 0.8              # inp / inn / clk / qp / qn leave the cell on met2 this far past its edge
 TRIM_L = 0.80           # met3 trim stub on outn: extracted outp / outn within 0.15 % (4- and 6-bit sizing)
 
@@ -127,6 +128,28 @@ class Row:
         return min(vals) if k == 2 else max(vals)
 
 
+def _clusters(xs, gap):
+    """Sorted xs grouped where neighbours are closer than gap."""
+    xs = sorted(xs)
+    out = [[xs[0]]]
+    for x in xs[1:]:
+        (out[-1].append(x) if x - out[-1][-1] < gap else out.append([x]))
+    return out
+
+
+def _segments(row, net):
+    """x-ranges (gate x) of the runs of neighbouring same-net gates in a row (one gate-contact comb each)."""
+    out = []
+    for f in row.f:
+        if f["g"] != net:
+            continue
+        if out and f["shared"] and out[-1][2] == row.f.index(f) - 1:
+            out[-1] = (out[-1][0], f["x"], row.f.index(f))
+        else:
+            out.append((f["x"], f["x"], row.f.index(f)))
+    return [(a, b) for a, b, _ in out]
+
+
 def _fe_extra(fe):
     """Poly pad and npc extents of a FET finger (relative to the diffusion centre)."""
     if not hasattr(fe, "pad_poly"):
@@ -167,66 +190,110 @@ def _row_draw(top, row, y):
                  min(ya + ia[3], yb + ib[3]), lay)
 
 
+def _odd(n):
+    n = max(1, int(n))
+    return n if n % 2 else n + 1
+
+
+def input_pattern(m):
+    """Finger order of the input pair, as pairs of fingers sharing a drain (A = Mi1 / inp, B = Mi2 / inn).
+
+    m = 2 fingers per device: clustered A A | B B (each drain an inner diffusion; small devices, where
+    common centroid adds output-node mismatch: Sharma et al., DATE 2021).  m = 4k: common-centroid
+    (A B B A) x k pairs, every block t-x-t, so both drains keep the same count and geometry (Hastings)."""
+    if m == 2:
+        return ["A", "B"]
+    assert m % 4 == 0
+    return ["A", "B", "B", "A"] * (m // 4)
+
+
 def strongarm_rows(c):
-    """Device rows of the StrongARM (left halves mirrored where the circuit is left/right symmetric)."""
+    """Device rows of the StrongARM (left halves mirrored where the circuit is left/right symmetric).
+
+    One architecture for every resolution: the sizing (design['cmp']) sets the widths, this sets the
+    fingers: input pair m = 2 (clustered) while a finger stays <= WF_IN_MAX, else m = 4k (common centroid);
+    the tail gets as many fingers as the pair (tail node on the axis); latch NMOS / PMOS odd finger counts
+    no wider than WF_MAX, so the xp / output bars keep their places."""
     L, Lin = c["l"], c["l_in"]
-    swap = {"inp": "inn", "xp": "xn", "outp": "outn", "qp": "qn", "Mon1": "Mon2", "Mn1": "Mn2",
+    swap = {"inp": "inn", "xp": "xn", "outp": "outn", "qp": "qn", "Mon1": "Mon2", "Mn1": "Mn2", "Mop1": "Mop2",
             "Mp1": "Mp2", "Mr1": "Mr2", "Mr3": "Mr4", "Mdl1": "Mdl2", "d_outn": "d_outp"}
     swap.update({v: k for k, v in list(swap.items())})
-    sw = lambda n: swap.get(n, n.replace("Mop1", "Mop2") if n.startswith("Mop1") else
-                               n.replace("Mop2", "Mop1") if n.startswith("Mop2") else n)
+
+    def sw(n):
+        base, dot, idx = n.partition(".")
+        return swap.get(base, base) + dot + idx
 
     def dev(name, kind, w, l):
         return Dev(name, kind, w, l, "", "", "", fingers=1, tie=False)
 
-    for w in (c["w_ln"], c["w_inv_n"], c["w_lp"], c["w_rst"], c["w_inv_p"]):
+    for w in (c["w_inv_n"], c["w_rst"]):
         if w > WF_MAX + 1e-9:
-            raise NotImplementedError(f"compact StrongARM: latch / reset / inverter devices wider than {WF_MAX} um "
-                                      "need fingers (not implemented)")
-    # tail: 2k fingers no wider than WF_TAIL, tail node on both ends and (k even) on the axis
-    kt = 2 * max(1, round(c["w_tail"] / (4 * WF_TAIL)))           # kt even: the tail node sits on the axis
+            raise NotImplementedError(f"compact StrongARM: reset / inverter NMOS wider than {WF_MAX} um")
+    # input pair
+    m = 2 if c["w_in"] / 2 <= WF_IN_MAX + 1e-9 else 4 * math.ceil(c["w_in"] / (4 * WF_IN_MAX) - 1e-9)
+    wi = c["w_in"] / m
+    seq = []
+    for d in input_pattern(m):
+        x = "xp" if d == "A" else "xn"
+        name, g = ("Mi1", "inp") if d == "A" else ("Mi2", "inn")
+        seq += [(name, g, "tail", x), (name, g, x, "tail")]
+    cnt = {}
+    fingers = []
+    for name, g, a, b in seq:
+        k = cnt[name] = cnt.get(name, -1) + 1
+        fingers.append((f"{name}.{k}", dev(name, "n", wi, Lin), g, "bot", a, b))
+    dmy = lambda n: (n, dev("Md", "n", wi, Lin), "tail", "bot", "tail", "tail")   # dummy: all terminals on tail
+    inp = Row([dmy("Md1")] + fingers + [dmy("Md2")])
+    inp.center()
+    # tail: as many fingers as the pair (even count of pairs: the tail node sits on the axis)
+    kt = max(2, 2 * round(m / 2))
     nodes = ["tail" if i % 2 == 0 else "vss" for i in range(2 * kt + 1)]
     tail = Row([(f"Mt.{i}", dev("Mt", "n", c["w_tail"] / (2 * kt), L), "clk", "bot", nodes[i], nodes[i + 1])
                 for i in range(2 * kt)])
     tail.center()
-    # input pair: m fingers each (m even), clustered: tail A xp A tail ... | ... tail B xn B tail
-    m = max(2, 2 * round(c["w_in"] / (2 * WF_IN)))
-    wi = c["w_in"] / m
-    dmy = lambda n: (n, dev("Md", "n", wi, Lin), "tail", "bot", "tail", "tail")   # dummy: all terminals on tail
-    inp = Row([dmy("Md1")] +
-              [(f"Mi1.{i}", dev("Mi1", "n", wi, Lin), "inp", "bot", ("tail", "xp")[i % 2], ("xp", "tail")[i % 2])
-               for i in range(m)] +
-              [(f"Mi2.{i}", dev("Mi2", "n", wi, Lin), "inn", "bot", ("tail", "xn")[i % 2], ("xn", "tail")[i % 2])
-               for i in range(m)] + [dmy("Md2")])
-    inp.center()
     x_xp = min(x for x, n, _ in inp.bars("xp"))                   # outermost xp bar of the pair
-    # NMOS latch (left): output-inverter NMOS outside, Mn1 with its xp bar above the pair's
-    # latch NMOS with an outer dummy finger: gate on Mn1's gate net (one shared gate contact), both
-    # diffusions on outn (its outer bar is tied to outn), so it only adds a mirror-symmetric load
+    # NMOS latch (left): output-inverter NMOS outside, outer dummy finger (gate on Mn1's gate net, both
+    # diffusions on outn), Mn1 in an odd number of fingers outn xp outn ... xp, its inner xp bar above the pair's
+    kn = _odd(math.ceil(c["w_ln"] / WF_MAX - 1e-9))
+    wn = c["w_ln"] / kn
+    mn = [(f"Mn1.{i}", dev("Mn1", "n", wn, L), "outp", "top", ("outn", "xp")[i % 2], ("xp", "outn")[i % 2])
+          for i in range(kn)]
     nl = Row([("Mon1", dev("Mon1", "n", c["w_inv_n"], L), "outp", "top", "qp", "vss"),
-              ("Mdl1", dev("Mdl", "n", c["w_ln"], L), "outp", "top", "d_outn", "outn"),
-              ("Mn1", dev("Mn1", "n", c["w_ln"], L), "outp", "top", "outn", "xp")], align="top")
-    nl.anchor("Mn1", "R", x_xp)
-    # PMOS (left): output-inverter PMOS outside; latch Mp1 + reset Mr1 (both on outn) + reset Mr3 (on xp)
-    # output-inverter PMOS folded to the latch PMOS finger width when it is a multiple of it (shares a vdd bar
-    # with Mp1, keeps the row one finger tall), else into fingers no wider than WF_MAX / 2
-    k = round(c["w_inv_p"] / c["w_lp"])
-    k = k if k >= 1 and abs(k * c["w_lp"] - c["w_inv_p"]) < 1e-6 else math.ceil(c["w_inv_p"] / (WF_MAX / 2))
+              ("Mdl1", dev("Mdl", "n", wn, L), "outp", "top", "d_outn", "outn")] + mn, align="top")
+    nl.anchor(f"Mn1.{kn - 1}", "R", x_xp)
+    # PMOS (left): output-inverter PMOS outside; latch Mp1 (odd fingers vdd outn ... outn) + reset Mr1 (outn)
+    # + reset Mr3 (xp).  The inverter PMOS is folded to the latch finger width when it is a multiple of it
+    # (shares a vdd bar with Mp1, keeps the row one finger tall), else into fingers no wider than WF_MAX / 2
+    kp = _odd(math.ceil(c["w_lp"] / WF_MAX - 1e-9))
+    wp = c["w_lp"] / kp
+    k = round(c["w_inv_p"] / wp)
+    k = k if k >= 1 and abs(k * wp - c["w_inv_p"]) < 1e-6 else math.ceil(c["w_inv_p"] / (WF_MAX / 2))
     mop = [(f"Mop1.{i}", dev("Mop1", "p", c["w_inv_p"] / k, L), "outp", "bot", ("vdd", "qp")[(k - i) % 2],
             ("qp", "vdd")[(k - i) % 2]) for i in range(k)]
-    pl = Row(mop + [
-              ("Mp1", dev("Mp1", "p", c["w_lp"], L), "outp", "bot", "vdd", "outn"),
+    mp = [(f"Mp1.{i}", dev("Mp1", "p", wp, L), "outp", "bot", ("vdd", "outn")[i % 2], ("outn", "vdd")[i % 2])
+          for i in range(kp)]
+    pl = Row(mop + mp + [
               ("Mr1", dev("Mr1", "p", c["w_rst"], L), "clk", "top", "outn", "vdd"),
               ("Mr3", dev("Mr3", "p", c["w_rst"], L), "clk", "top", "vdd", "xp")], align="bot")
     pl.anchor("Mr3", "R", x_xp)
-    # output inverter as a column: Mon1's qp bar under Mop1's qp bar (qp is one met1 drop, no track)
+    # output inverter as a column: Mon1's qp bar under Mop1's qp bar (qp is one met1 drop, no track).  The
+    # inverter NMOS moves out to its PMOS; if the PMOS is the inner one (it is free when it shares no bar
+    # with Mp1), the PMOS moves out instead
     x_q = max(x for x, n, f in pl.bars("qp"))
     mon = nl.by["Mon1"]
-    assert x_q + mon["fe"].sd <= mon["x"] + 1e-6, "output inverter NMOS cannot sit under its PMOS"
-    mon["x"] = x_q + mon["fe"].sd
+    if x_q + mon["fe"].sd <= mon["x"] + 1e-6:
+        mon["x"] = x_q + mon["fe"].sd
+    else:
+        assert not any(f["shared"] for f in pl.f if f["name"].startswith("Mp1.0")), \
+            "output inverter: PMOS shares a bar with the latch and the NMOS cannot move under it"
+        dx = (mon["x"] - mon["fe"].sd) - x_q
+        for f in pl.f:
+            if f["name"].startswith("Mop1"):
+                f["x"] += dx
     dummies = [("Md1", "tail", "tail", "tail", wi, Lin), ("Md2", "tail", "tail", "tail", wi, Lin),
-               ("Mdl1", "outn", "outp", "outn", c["w_ln"], L), ("Mdl2", "outp", "outn", "outp", c["w_ln"], L)]
-    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummies=dummies)
+               ("Mdl1", "outn", "outp", "outn", wn, L), ("Mdl2", "outp", "outn", "outp", wn, L)]
+    return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummies=dummies,
+                fingers=dict(inp=m, tail=2 * kt, latch_n=kn, latch_p=kp, inv_p=k))
 
 
 def build_strongarm(c, name="strongarm"):
@@ -269,7 +336,7 @@ def build_strongarm(c, name="strongarm"):
         for f in row.f:
             _fe_extra(f["fe"])
     fT, fI = tail.f[0], inp.f[0]
-    fN, fP, fR = nl.by["Mn1"], pl.by["Mp1"], pl.by["Mr1"]
+    fN, fP, fR = nl.by["Mn1.0"], pl.by["Mp1.0"], pl.by["Mr1"]
 
     # ---------------------------------------------------------------- vertical placement
     y_clk0 = RAIL_W + R_M1_SP + V1_M1[1] / 2                       # tail gate comb + clk track
@@ -278,6 +345,11 @@ def build_strongarm(c, name="strongarm"):
     y_clk0 = yT + fT["dy"] + fT["fe"].pad_y
     yI = max(tail.span(yT, "poly", 3) + R_POLY_SP - fI["fe"].pad_poly[2],
              tail.span(yT, "bar_y", 1) + R_LI_SP - fI["fe"].pad[2]) - fI["dy"]
+    segs = {net: _segments(inp, net) for net in ("inp", "inn")}
+    cc = any(len(v) > 1 for v in segs.values())                    # common-centroid pair: inputs on two tracks
+    y_Tt = yT + fT["dy"]                                            # tail track over the tail row
+    if cc:                                                          # inp / inn tracks between the tail and the pair
+        yI = max(yI, y_Tt + TRK / 2 + R_M2_SP + 2 * IN_PITCH + TRK / 2 - fI["dy"] - fI["fe"].pad_y)
     y_in = yI + fI["dy"] + fI["fe"].pad_y                           # input combs + inp / inn tracks
     yN = max(inp.span(yI, "diff", 3) + R_DIFF_SP - nl.span(0, "diff", 2),
              inp.span(yI, "bar_y", 1) + R_LI_SP - nl.span(0, "bar_y", 0),
@@ -332,38 +404,64 @@ def build_strongarm(c, name="strongarm"):
     hline(y_clk0, -xc0 - MC / 2, xc0 + MC / 2, LI, MC)
     for x in (-xc0, xc0):
         v1(x, y_clk0)
-    # tail node: tail bars -> met1 up -> the pair's tail track (met2 through its tail bars)
+    # tail node: a met2 track through the tail bars of each row, joined by one met1 link on the axis (both
+    # rows have their tail node there)
     y_tt = yI + fI["dy"]
-    ib = inp.bars("tail")
+    ib, tb = inp.bars("tail"), tail.bars("tail")
     for x, n, f in ib:
         v1(x, y_tt)
     hline(y_tt, min(b[0] for b in ib), max(b[0] for b in ib), MET2, TRK)
+    for x, n, f in tb:
+        v1(x, y_Tt)
+    hline(y_Tt, min(b[0] for b in tb), max(b[0] for b in tb), MET2, TRK)
+    assert any(abs(b[0]) < 1e-6 for b in ib) and any(abs(b[0]) < 1e-6 for b in tb), "tail node not on the axis"
+    vline(0.0, y_Tt, y_tt, MET1, M1_STUB)
     for g in inp.gates("tail"):                                     # input-pair dummies: gate -> tail
         mcon(g["x"], y_in)
         vline(g["x"], y_in, y_tt, MET1, M1_STUB)
         hline(y_tt, g["x"] - g["fe"].sd, g["x"] + g["fe"].sd, MET1, V1_M1[1])
-    for x, n, f in tail.bars("tail"):
-        mcon(x, bar_y(f, yT, 1) - MC / 2)
-        vline(x, bar_y(f, yT, 1) - MC, y_tt, MET1, M1_STUB)
-        if not any(abs(b[0] - x) < 1e-6 for b in ib):              # met1 jog into the nearest pair tail via
-            xi = min(ib, key=lambda b: abs(b[0] - x))[0]
-            hline(y_tt, min(x - M1_STUB / 2, xi), max(x + M1_STUB / 2, xi), MET1, V1_M1[1])
 
     # ---------------------------------------------------------------- inputs: combs -> sideways tracks
-    tails = [x for x, n, f in tail.bars("tail")]
-    for net, sgn in (("inp", -1), ("inn", 1)):
-        gs = inp.gates(net)                                         # via on the comb, clear of the tail drops
-        g_lo, g_hi = min(g["x"] for g in gs), max(g["x"] for g in gs)
-        cand = [g_lo + i * 0.005 for i in range(int((g_hi - g_lo) / 0.005) + 1)]
-        xv = snap(max(cand, key=lambda x: min(abs(x - t) for t in tails)))
-        assert min(abs(xv - t) for t in tails) >= V1_M1[0] / 2 + R_M1_SP + M1_STUB / 2, "no room for the input via"
-        v1(xv, y_in)
-        hline(y_in, xv, sgn * (x_edge + EXIT), MET2, TRK_IN)       # inputs leave the cell sideways
-        _pin(top, net, sgn * (x_edge + EXIT - 0.15), y_in, MET2)
+    # inputs: one via per comb segment (clear of the tail link on the axis); a clustered pair has one segment
+    # per input and leaves sideways on the comb level, a common-centroid pair joins its segments on a track
+    for k, (net, sgn) in enumerate((("inp", -1), ("inn", 1))):
+        y_net = y_in - (k + 1) * IN_PITCH if cc else y_in
+        xvs = []
+        for g_lo, g_hi in segs[net]:
+            cand = [g_lo + i * 0.005 for i in range(int((g_hi - g_lo) / 0.005) + 1)]
+            xv = snap(max(cand, key=lambda x: abs(x)))
+            assert abs(xv) >= V1_M1[0] / 2 + R_M1_SP + M1_STUB / 2, "no room for the input via"
+            box(xv, y_in, MC, MC, MCON)
+            box(xv, y_in, *V1_M1, MET1)
+            vline(xv, y_net, y_in, MET1, V1_M1[0])
+            v1(xv, y_net, li=False)
+            xvs.append(xv)
+        xe = sgn * (x_edge + EXIT)
+        hline(y_net, min(xvs + [xe]), max(xvs + [xe]), MET2, TRK_IN)   # inputs leave the cell sideways
+        _pin(top, net, sgn * (x_edge + EXIT - 0.15), y_net, MET2)
 
     # ---------------------------------------------------------------- xp / xn: pair -> latch (li) -> reset (met1)
-    for net, nrow, prow in (("xp", nl, pl), ("xn", nr, pr)):
-        (xn_, _, fn_), (xp_, _, fp_) = nrow.bars(net)[0], prow.bars(net)[0]
+    for k, (net, nrow, prow) in enumerate((("xp", nl, pl), ("xn", nr, pr))):
+        # several drains of the pair / the latch NMOS: met2 tracks over their diffusion bands
+        tr = {}
+        for key, row, y, dyk in (("i", inp, yI, (1, -1)[k]), ("n", nrow, yN, -1)):
+            bs = row.bars(net)
+            if len(bs) > 1:
+                yb = tr[key] = y + bs[0][2]["dy"] + dyk * BAND_DY
+                for x, n, f in bs:
+                    v1(x, yb)
+                hline(yb, min(b[0] for b in bs), max(b[0] for b in bs), MET2, TRK)
+        if len(tr) == 2:                                  # common centroid: pair track -> latch track on met3
+            ib_ = [b[0] for b in inp.bars(net)]
+            xl = min((x for x, n, f in nrow.bars(net) if abs(abs(x) - xr) >= 0.7), key=abs)
+            hline(tr["i"], min(ib_ + [xl]), max(ib_ + [xl]), MET2, TRK)    # (pair track reaches the link)
+            for yv in tr.values():
+                box(xl, yv, M2_PAD, VIA + 0.08, MET2)
+                box(xl, yv, VIA, VIA, VIA2)
+                box(xl, yv, M3_PAD, M3_PAD, MET3)
+            vline(xl, min(tr.values()) - M3_PAD / 2, max(tr.values()) + M3_PAD / 2, MET3, M3_PAD)
+        xn_, _, fn_ = min(nrow.bars(net), key=lambda b: abs(b[0]))      # the latch drain above the pair's
+        xp_, _, fp_ = prow.bars(net)[0]
         for x, n, f in inp.bars(net):
             if abs(x - xn_) < 1e-6:
                 vline(x, bar_y(f, yI, 1) - 0.01, bar_y(fn_, yN, 0) + 0.01, LI, MC)
@@ -394,13 +492,14 @@ def build_strongarm(c, name="strongarm"):
         for x, n, f in nrow.bars(net_d):
             mcon(x, bar_y(f, yN, 1) - MC / 2)
             vline(x, bar_y(f, yN, 1) - MC, y_lo, MET1, M1_STUB)
-            v1(x, y_lo, li=False)
             dx.append(x)
         for x, n, f in prow.bars(net_d):
             mcon(x, bar_y(f, yP, 0) + MC / 2)
             vline(x, y_lo, bar_y(f, yP, 0) + MC, MET1, M1_STUB)
-            v1(x, y_lo, li=False)
             dx.append(x)
+        for cl in _clusters(dx, V1_M1[0] + R_M1_SP):     # one via per group of nearby drops
+            hline(y_lo, cl[0] - M1_STUB / 2, cl[-1] + M1_STUB / 2, MET1, V1_M1[1])
+            v1(snap(sum(cl) / len(cl)), y_lo, li=False)
         hline(y_lo, max(dx, key=abs), 0.0 if sgn < 0 else XJ, MET2, TRK)   # left: to the jog; right: outp's via2
     # the swap: outp y_hi (left) -> met3 -> y_lo (right); outn y_lo (left) -> met2 jog on the axis -> y_hi (right)
     v2(-XJ, y_hi)
@@ -467,7 +566,7 @@ def build_strongarm(c, name="strongarm"):
     top.name = name
     bb = top.bbox
     info = dict(width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]),
-                fingers=dict(tail=len(tail.f), inp=(len(inp.f) - 2) // 2), dummies=R["dummies"])
+                fingers=R["fingers"], dummies=R["dummies"])
     return top, info
 
 
