@@ -13,10 +13,10 @@ simulation in ngspice.
 | CDAC unit cell (2x2 um MIM + own 4 switches) | 98.1 um² (PCell cap beside gLayout FETs) | 17.5 um² (4.88 x 3.58 um) | -82 % | DRC 0 / 0, LVS match, capm.10 clean |
 | 4-bit CDAC, per-unit switches | 2575 um² (54.1 x 47.6 um) | 460 um² (26.9 x 17.1 um); 875 um² (36.0 x 24.3 um) with the dummy-cap ring | -82 % / -66 % | DRC 0 / 0, LVS 80 devices + ring |
 | 8-bit CDAC | 8294 um² (2.7 um cap, 12 rails / row) | 5373 um² (89.4 x 60.1 um, same cell as 4-bit); 6626 um² with the dummy-cap ring | -35 % / -20 % | DRC 0 / 0, LVS 1280 devices + ring |
-| StrongARM comparator | 1671 um² (50.8 x 32.9 um) | 73 um² (8.27 x 8.79 um) with dummies and guard rings | -96 % | DRC 0 / 0, LVS match |
-| Top-plate switch (TG in closed guard rings) | - | 25 um² (4-bit), 52 um² (6-bit) | - | DRC 0 / 0, LVS match |
-| SAR logic (LibreLane, sky130_fd_sc_hd) | - | 548 um² (4-bit), 801 um² (6-bit) | - | DRC 0 / 0, LVS match (incl. decaps) |
-| Routed core (CDAC + comparator + top switch + logic) | - | 2753 um² (65.4 x 42.1 um, 4-bit); 5433 um² (94.2 x 57.7 um, 6-bit) | - | DRC 0 / 0, LVS match |
+| StrongARM comparator (one generator, 4-8 bit) | 1671 um² (50.8 x 32.9 um, 4-bit) | 73 um² device area (8.27 x 8.79 um) with dummies and guard rings; with pin exits 9.87 x 8.79 um (4-bit), 11.43 x 8.99 um (6-bit), 32.6 x 12.5 um (8-bit) | -96 % (4-bit) | DRC 0 / 0, LVS match at 4, 6 and 8 bits |
+| Top-plate switch (TG in closed guard rings) | - | 4.45 x 5.77 um (4-bit), 6.37 x 7.52 um (6-bit), 25.6 x 8.4 um (8-bit) | - | DRC 0 / 0, LVS match |
+| SAR logic (LibreLane, sky130_fd_sc_hd) | - | 548 um² (4-bit), 801 um² (6-bit), 1122 um² (8-bit) | - | DRC 0 / 0, LVS match (incl. decaps) |
+| Routed core (CDAC + comparator + top switch + logic) | - | 65.4 x 41.8 um (4-bit), 94.2 x 57.3 um (6-bit), 142.9 x 88.9 um (8-bit) | - | DRC 0 / 0, LVS match at 4, 6 and 8 bits |
 
 Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level): ENOB 3.97, max DNL
 0.037 LSB, max INL 0.033 LSB, 18.5 uW at 10 MS/s. The schematic gives ENOB 3.96, DNL 0.063 LSB.
@@ -129,11 +129,11 @@ comparator, topsw, sarlogic, then core; `python collect_layout.py N`; `python ru
 ## 6. Open items
 
 - **Leakage on the floating top plate.** Diagnosed (section 6c): the top-plate switch's LVT PMOS leaks at
-  fs / ff 125 C, and a standard-Vt PMOS does not settle at ss / -40 C. Open: a sizing rule that holds at both
-  ends (wider standard-Vt or longer-L LVT PMOS, or a bootstrapped switch).
-- **8-bit comparator.** Offset-driven sizing gives a 33 um input pair (34 fingers per side), a 50 um tail and
-  16.6 um latch devices. That is a multi-row layout (or the sizer's preamplifier option), not just fingers on
-  the latch: a design decision before a layout one.
+  fs / ff 125 C, and a standard-Vt PMOS does not settle at ss / -40 C. Decision (2026-10-21): keep the sized
+  LVT switch; the extracted 4-bit core stays within DNL 0.13 LSB at every corner. Options for a later
+  revision: a wider standard-Vt or longer-L LVT PMOS, or a bootstrapped switch.
+- **8-bit post-layout.** The 8-bit core is assembled and clean (section 6d); its extracted transistor-level
+  simulation is the remaining check.
 - **Remaining blocks:** TinyTapeout tile integration (pins, analog ground, Vref decoupling).
 - **Post-layout PVT + Monte Carlo** of the full core.
 
@@ -255,6 +255,40 @@ the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^
     pg/ng (about 93 fF in total, 9-14 fF per line) and the comparator clock bus (12 fF).
   - So the schematic power estimate needs a wiring term proportional to the array size before the FoM is
     quoted, and shorter control lines (logic closer to the array, or per-row drivers) are the lever.
+
+## 6d. One comparator generator for 4 to 8 bits
+
+The sizing (`design['cmp']`) sets the device widths; `strongarm.py` turns them into fingers and placement with
+the same topology at every resolution, so the 8-bit comparator needs no separate architecture:
+
+| Rule | 4-bit | 6-bit | 8-bit |
+|---|---|---|---|
+| input pair: even fingers per device, each <= 2.5 um, clustered and mirrored (`A...A \| B...B`) | 2 x 1.0 um | 2 x 1.05 um | 14 x 2.36 um |
+| tail: as many fingers as the pair, tail node on the axis | 4 x 0.75 um | 4 x 0.8 um | 28 x 1.78 um |
+| latch NMOS / PMOS: odd finger counts <= 2 um (bars keep their places) | 1 | 1 | 9 x 1.84 um |
+| output trim stub: 0.80 um + 0.05 um per extra latch finger | 0.80 um | 0.80 um | 1.20 um |
+| size with pin exits | 9.87 x 8.79 um | 11.43 x 8.99 um | 32.6 x 12.5 um |
+
+- Routing scales with the bar counts: a met2 tail track over each row joined on the axis; one via per
+  input-comb segment; met2 band tracks for multi-bar xp / xn (left / right at one height) with a met3 link to
+  the latch when bars do not line up; drain vias clustered in the output channel.
+- **Common centroid was tried for the 8-bit pair and dropped.** An `ABBA` pattern (16 fingers per device)
+  was DRC/LVS clean, but extraction showed xp / xn 1.1 % apart and their coupling to the inputs unbalanced
+  (xn-inp 0.49 fF vs xp-inn 0.13 fF: the band tracks run parallel to different input tracks). The pattern is
+  common-centroid but not mirror-symmetric, so every connection differs between the sides. Clustered and
+  mirrored restores exact images, in line with Sharma et al. (DATE 2021); the gradient term common centroid
+  would cancel is small over the pair's ~16 um next to the random mismatch the sizing allows (Pelgrom).
+- Extracted balance with the final generator:
+
+  | Comparator | outp / outn | xp / xn |
+  |---|---|---|
+  | 4-bit | 0.28 % | 0.44 % |
+  | 6-bit | 0.15 % | 0.42 % |
+  | 8-bit | 0.07 % | 0.24 % |
+
+- **Top-plate switch at 8 bits** (17 NMOS + 34 PMOS fingers): two tracks let an NMOS drop to the far track pass
+  a PMOS drop of the other net at the same x. Three tracks fix it for any finger count: NMOS vcm, shared top,
+  PMOS vcm (0.46 um apart so via pads of drops at one x stay clear), the two vcm tracks joined on met3.
 
 ## 7. References
 
