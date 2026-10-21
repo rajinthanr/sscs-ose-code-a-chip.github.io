@@ -1,0 +1,10 @@
+generated build/8bit/layout/sar8b_core.gds in 2.4 s: 142.9 x 88.9 um
+DRC klayout 0 {}
+DRC magic   0 {}
+LVS MATCH devices ['4', '4'] ['Netlists match with 42 symmetries.', 'Netlists match uniquely.', 'Final result: Circuits match uniquely.', 'Circuits match uniquely.']  (17 s)
+PEX /foss/designs/code-a-chip/ISSCC27/submitted_notebooks/SAR_ADC_Generator/build/8bit/layout/pex/sar8b_core_pex.spice
+Wed Oct 21 12:31:59 PM CEST 2026
+schematic                    ENOB 7.979  DNL 0.255  INL 0.277  offset -0.873  gain -0.514 LSB  186.64 uW
+full core from layout        ENOB 7.860  DNL 0.255  INL 0.381  offset -0.873  gain -1.016 LSB  237.10 uW
+| ENOB [bit] | 7.979 | 7.860 |
+Wed Oct 21 03:11:56 PM CEST 2026
