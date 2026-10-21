@@ -14,9 +14,18 @@ simulation in ngspice.
 | 4-bit CDAC, per-unit switches | 2575 um² (54.1 x 47.6 um) | 460 um² (26.9 x 17.1 um); 875 um² (36.0 x 24.3 um) with the dummy-cap ring | -82 % / -66 % | DRC 0 / 0, LVS 80 devices + ring |
 | 8-bit CDAC | 8294 um² (2.7 um cap, 12 rails / row) | 5373 um² (89.4 x 60.1 um, same cell as 4-bit); 6626 um² with the dummy-cap ring | -35 % / -20 % | DRC 0 / 0, LVS 1280 devices + ring |
 | StrongARM comparator | 1671 um² (50.8 x 32.9 um) | 73 um² (8.27 x 8.79 um) with dummies and guard rings | -96 % | DRC 0 / 0, LVS match |
+| Top-plate switch (TG in closed guard rings) | - | 25 um² (4-bit), 52 um² (6-bit) | - | DRC 0 / 0, LVS match |
+| SAR logic (LibreLane, sky130_fd_sc_hd) | - | 548 um² (4-bit), 801 um² (6-bit) | - | DRC 0 / 0, LVS match (incl. decaps) |
+| Routed core (CDAC + comparator + top switch + logic) | - | 2753 um² (65.4 x 42.1 um, 4-bit); 5433 um² (94.2 x 57.7 um, 6-bit) | - | DRC 0 / 0, LVS match |
 
 Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level): ENOB 3.97, max DNL
 0.037 LSB, max INL 0.033 LSB, 18.5 uW at 10 MS/s. The schematic gives ENOB 3.96, DNL 0.063 LSB.
+Full routed 4-bit core extracted flat (CDAC, comparator, top switch and SAR logic with all routing):
+ENOB 3.98, max DNL 0.037 LSB, max INL 0.024 LSB, offset -0.09 LSB, gain -0.02 LSB, 25.4 uW.
+
+Reproduce (gLayout venv, see `README.md`): `python run_layout.py <block> --bits N [--pex]` for cdacu,
+comparator, topsw, sarlogic, then core; `python collect_layout.py N`; `python run_postlayout.py --bits N`;
+`python studies/postlayout_pvt.py --bits N` for the extracted core across PVT.
 
 ## 2. Methodology that worked
 
@@ -119,11 +128,13 @@ Post-layout 4-bit ADC (extracted CDAC + extracted comparator, transistor level):
 
 ## 6. Open items
 
-- **Leakage on the floating top plate.** The schematic PVT sweep degrades only at hot fast-NMOS corners:
-  fs / 125 C gives DNL 0.24, INL 0.28, offset -0.40 LSB, and power doubles. The suspected cause is leakage
-  through the LVT switches; a standard-Vt top-plate switch is the candidate fix.
-- **8-bit comparator.** Its latch devices (16.6 um) need multi-finger support in the comparator generator.
-- **Remaining blocks:** SAR logic layout, top-level assembly, TinyTapeout pins.
+- **Leakage on the floating top plate.** Diagnosed (section 6c): the top-plate switch's LVT PMOS leaks at
+  fs / ff 125 C, and a standard-Vt PMOS does not settle at ss / -40 C. Open: a sizing rule that holds at both
+  ends (wider standard-Vt or longer-L LVT PMOS, or a bootstrapped switch).
+- **8-bit comparator.** Offset-driven sizing gives a 33 um input pair (34 fingers per side), a 50 um tail and
+  16.6 um latch devices. That is a multi-row layout (or the sizer's preamplifier option), not just fingers on
+  the latch: a design decision before a layout one.
+- **Remaining blocks:** TinyTapeout tile integration (pins, analog ground, Vref decoupling).
 - **Post-layout PVT + Monte Carlo** of the full core.
 
 ## 6a. Dummies and guard rings per block
@@ -216,6 +227,23 @@ the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^
     - the top switch's power drops crossing the top-plate stub;
     - vdd's met3 hop landing on a phase bus.
   - Lesson: route power away from the top-plate net by construction, and run LVS on every assembly change.
+- **Post-layout power.** Linearity holds in the extracted cores, but power rises: 4-bit 13.9 -> 25.4 uW,
+  6-bit 33.8 -> 63.1 uW (ENOB 6.02, DNL 0.048 LSB, INL 0.067 LSB). Supply charge per 4-bit ramp, by
+  extraction step:
+
+  | Case | vdd | vref |
+  |---|---|---|
+  | schematic | 307 | 91 |
+  | extracted unit-cell CDAC | 372 | 130 |
+  | + extracted comparator | 417 | 130 |
+  | full routed core | 594 | 132 |
+
+  - vref: the whole increase (+43 %) comes from the CDAC array, i.e. bottom-plate and control-rail parasitics
+    that the reference charges each cycle.
+  - vdd: most of it comes from wiring the logic drives at core level: the per-bit switch-control lines
+    pg/ng (about 93 fF in total, 9-14 fF per line) and the comparator clock bus (12 fF).
+  - So the schematic power estimate needs a wiring term proportional to the array size before the FoM is
+    quoted, and shorter control lines (logic closer to the array, or per-row drivers) are the lever.
 
 ## 7. References
 
