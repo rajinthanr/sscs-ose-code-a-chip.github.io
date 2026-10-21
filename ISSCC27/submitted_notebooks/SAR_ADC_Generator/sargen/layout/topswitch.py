@@ -4,7 +4,7 @@
     phitb comb (PMOS gates)                        gate contacts on the outer side of each row
     [vcm Mp top Mp vcm ...]                        PMOS fingers, the top node on inner shared bars
     n-tap ring segment                             | n-well
-    vcm / top tracks (met2) over the ring segments  the channel carries only the two source/drain nets
+    vcm / top / vcm tracks (met2)                  NMOS vcm, shared top, PMOS vcm: drops never pass each other
     p-tap ring segment
     [vcm Mn top Mn vcm ...]                        NMOS fingers
     phit comb (NMOS gates)
@@ -19,8 +19,8 @@ import math
 
 from .cdac import M2_PAD, M3_PAD, MET2, MET3, MET4, VIA, VIA2, snap
 from .cell import MET1, NWELL, VIA1, V1, Dev
-from .strongarm import (RAIL_W, R_DIFF_TAP, TAP_H, M1_STUB, TRK, TRK_IN, WF_MAX, Row, _fe_extra, _row_draw,
-                        _tap_strip)
+from .strongarm import (RAIL_W, R_DIFF_TAP, TAP_H, M1_STUB, TRK, TRK_IN, WF_MAX, Row, _clusters, _fe_extra,
+                        _row_draw, _tap_strip)
 from .unitcell import LI, MC, MCON, NSDM, PSDM, R_M1_SP, R_M2_SP, V1_M1, V1_M2, _pin, _poly
 
 VIA3, M3_TOP = (70, 44), 0.50          # via3; met3 landing (met3.6 area 0.24 um^2)
@@ -48,14 +48,6 @@ def build_top_switch(design, name="topsw"):
     prow = _fingers("Mttp", "p", sw["top_wp"], lp, fl, "phitb", "top")
     nrow.center()
     prow.center()
-    # NMOS drops to the upper (top) track and PMOS drops to the lower (vcm) track overlap in the channel:
-    # shift the PMOS row by the least amount that keeps those apart
-    nx = [x for x, n, f in nrow.bars("top")]
-    px = [x for x, n, f in prow.bars("vcm")]
-    gap = M1_STUB + R_M1_SP
-    s_best = min((i * 0.005 * sgn for i in range(400) for sgn in (1, -1)),
-                 key=lambda s_: (any(abs(a - b - s_) < gap for a in nx for b in px), abs(s_)))
-    prow.shift(snap(s_best))
     for row in (nrow, prow):
         for f in row.f:
             _fe_extra(f["fe"])
@@ -79,7 +71,9 @@ def build_top_switch(design, name="topsw"):
     y_g0 = yN + fN["dy"] + fN["fe"].pad_y
     y_pseg = nrow.span(yN, "diff", 3) + R_DIFF_TAP + TAP_H / 2      # p-ring top segment (vcm track over it)
     nw0 = y_pseg + TAP_H / 2 + 0.13 + 0.05                          # n-well edge (p-tap to n-well)
-    y_nseg = nw0 + 0.18 + TAP_H / 2                                 # n-ring bottom segment (top track over it)
+    y_nseg = max(nw0 + 0.18 + TAP_H / 2, y_pseg + 2 * (V1_M1[1] + R_M1_SP))  # n-ring segment; tracks 0.46 apart
+                                                                    # (via pads of drops at one x stay clear)
+    nw0 = y_nseg - 0.18 - TAP_H / 2
     yP = y_nseg + TAP_H / 2 + R_DIFF_TAP - prow.span(0, "diff", 2)
     y_g1 = yP + fP["dy"] + fP["fe"].pad_y                           # PMOS gate comb
     y_vdd = max(y_g1 + V1_M1[1] / 2 + R_M1_SP, prow.span(yP, "diff", 3) + R_DIFF_TAP + TAP_H / 2 - RAIL_W / 2)
@@ -102,25 +96,36 @@ def build_top_switch(design, name="topsw"):
         _tap_strip(top, RAIL_W / 2, y_pseg, x, "p", vertical=True, margin=TAP_H)
         _tap_strip(top, y_nseg, y_vdd + RAIL_W / 2, x, "n", vertical=True, margin=TAP_H)
     rect(-X1, nw0, X1, H + 0.3, NWELL)
-    # ---- source / drain: bars -> met1 drops -> met2 tracks over the ring segments
-    y_vcm, y_top = y_pseg, y_nseg
-    for row, y, up in ((nrow, yN, True), (prow, yP, False)):
+    # ---- source / drain: three tracks, vcm (NMOS) over the p-ring segment, top in the middle, vcm (PMOS) over
+    # the n-ring segment: every drop reaches its track without passing a drop of the other net (any finger counts)
+    y_vn, y_top, y_vp = y_pseg, (y_pseg + y_nseg) / 2, y_nseg
+    y_vcm = y_vn
+    drops = {}
+    for row, y, up, yv in ((nrow, yN, True, y_vn), (prow, yP, False, y_vp)):
         for x, n, f in row.bars():
             yb = y + f["dy"] + f["fe"].bar_y[1 if up else 0]
             ym = yb - MC / 2 if up else yb + MC / 2
             box(x, ym, MC, MC, MCON)
             box(x, ym, M1_STUB, MC + 0.12, MET1)
-            yt = y_vcm if n == "vcm" else y_top
+            yt = yv if n == "vcm" else y_top
             rect(x - M1_STUB / 2, min(ym, yt), x + M1_STUB / 2, max(ym, yt), MET1)
-    for net, y in (("vcm", y_vcm), ("top", y_top)):
-        xs_ = sorted(x for row in (nrow, prow) for x, n, f in row.bars(net))
-        clusters = [[xs_[0]]]                                       # one via per group of nearby drops
-        for x in xs_[1:]:
-            (clusters[-1].append(x) if x - clusters[-1][-1] < V1_M1[0] + R_M1_SP else clusters.append([x]))
-        for cl in clusters:
-            rect(cl[0] - M1_STUB / 2, y - V1_M1[1] / 2, cl[-1] + M1_STUB / 2, y + V1_M1[1] / 2, MET1)
-            v1(snap(sum(cl) / len(cl)), y, li=False)
-        rect(xs_[0] - V1_M2[0] / 2, y - TRK / 2, xs_[-1] + V1_M2[0] / 2, y + TRK / 2, MET2)
+            drops.setdefault((n, yt), []).append(x)
+    for (n, yt), xs_ in drops.items():                              # (both rows share the top track)
+        for cl in _clusters(xs_, V1_M1[0] + R_M1_SP):               # one via per group of nearby drops
+            rect(cl[0] - M1_STUB / 2, yt - V1_M1[1] / 2, cl[-1] + M1_STUB / 2, yt + V1_M1[1] / 2, MET1)
+            v1(snap(sum(cl) / len(cl)), yt, li=False)
+    xs_all = [x for row in (nrow, prow) for x, n, f in row.bars()]
+    xj = min(xs_all) - 0.6                                          # the two vcm tracks join on met3 here
+    for net, y, xs_ in (("vcm", y_vn, [x for x, n, f in nrow.bars("vcm")]),
+                        ("vcm", y_vp, [x for x, n, f in prow.bars("vcm")]),
+                        ("top", y_top, [x for row in (nrow, prow) for x, n, f in row.bars("top")])):
+        xa = min(xs_ + ([xj] if net == "vcm" else []))
+        rect(xa - V1_M2[0] / 2, y - TRK / 2, max(xs_) + V1_M2[0] / 2, y + TRK / 2, MET2)
+    for y in (y_vn, y_vp):
+        box(xj, y, M2_PAD, M2_PAD, MET2)
+        box(xj, y, VIA, VIA, VIA2)
+        box(xj, y, M3_PAD, M3_PAD, MET3)
+    rect(xj - M3_PAD / 2, y_vn - M3_PAD / 2, xj + M3_PAD / 2, y_vp + M3_PAD / 2, MET3)
     # top -> met4 (the CDAC top plate's layer) at the track's right end; vcm pin on met2 at the left end
     xt = max(x for row in (nrow, prow) for x, n, f in row.bars("top")) + 0.6
     rect(xt - 0.6, y_top - TRK / 2, xt, y_top + TRK / 2, MET2)
