@@ -29,7 +29,7 @@ from .unitcell import (LI, MC, MCON, NSDM, POLY, PSDM, R_DIFF_SP, R_IMP_SP, R_LI
                        R_POLY_SP, TAP, V1_M1, V1_M2, _ext, _Fet, _pin, _poly)
 
 NPC, LICON = (95, 20), (66, 44)
-WF_IN_MAX = 2.5         # input pair: 2 fingers per device up to this finger width, else common centroid
+WF_IN_MAX = 2.5         # input pair: finger width limit
 WF_MAX = 2.0            # other devices: fingers no wider than this
 SPLIT = 0.34            # two contact bars instead of one shared bar (lets neighbouring gate pads sit on one side)
 R_NPC_SP = 0.27
@@ -44,7 +44,8 @@ XJ = 0.46               # output tracks swap between x = -XJ and +XJ
 IN_PITCH = 0.40         # common-centroid pair: inp / inn tracks below the comb level
 BAND_DY = 0.42          # extra met2 tracks over a diffusion band (xp / xn), off its centre (slim via2 fits)
 EXIT = 0.8              # inp / inn / clk / qp / qn leave the cell on met2 this far past its edge
-TRIM_L = 0.80           # met3 trim stub on outn: extracted outp / outn within 0.15 % (4- and 6-bit sizing)
+TRIM_L0, TRIM_DL = 0.80, 0.05   # met3 trim stub on outn: 0.80 um + 0.05 um per extra latch finger, tuned on
+                                 # extraction (outp / outn within 0.1 %: 1 finger 4 / 6 bit, 9 fingers 8 bit)
 
 
 class Row:
@@ -196,22 +197,21 @@ def _odd(n):
 
 
 def input_pattern(m):
-    """Finger order of the input pair, as pairs of fingers sharing a drain (A = Mi1 / inp, B = Mi2 / inn).
+    """Finger order of the input pair, as pairs of fingers sharing a drain (A = Mi1 / inp, B = Mi2 / inn):
+    clustered and mirror-symmetric at every size, A ... A | B ... B, each drain an inner diffusion.
 
-    m = 2 fingers per device: clustered A A | B B (each drain an inner diffusion; small devices, where
-    common centroid adds output-node mismatch: Sharma et al., DATE 2021).  m = 4k: common-centroid
-    (A B B A) x k pairs, every block t-x-t, so both drains keep the same count and geometry (Hastings)."""
-    if m == 2:
-        return ["A", "B"]
-    assert m % 4 == 0
-    return ["A", "B", "B", "A"] * (m // 4)
+    Clustered beats common centroid for StrongARM latches (Sharma et al., DATE 2021: common centroid adds
+    X / Y capacitance mismatch), and the mirror keeps xp and xn exact images (equal capacitance, equal
+    coupling to the inputs, no crossings).  Gradients stay negligible over the pair's width next to the
+    random mismatch the sizing allows (Pelgrom: the distance term is small over tens of um)."""
+    return ["A"] * (m // 2) + ["B"] * (m // 2)
 
 
 def strongarm_rows(c):
     """Device rows of the StrongARM (left halves mirrored where the circuit is left/right symmetric).
 
     One architecture for every resolution: the sizing (design['cmp']) sets the widths, this sets the
-    fingers: input pair m = 2 (clustered) while a finger stays <= WF_IN_MAX, else m = 4k (common centroid);
+    fingers: input pair in an even number of fingers <= WF_IN_MAX per device (clustered, mirror-symmetric);
     the tail gets as many fingers as the pair (tail node on the axis); latch NMOS / PMOS odd finger counts
     no wider than WF_MAX, so the xp / output bars keep their places."""
     L, Lin = c["l"], c["l_in"]
@@ -230,7 +230,7 @@ def strongarm_rows(c):
         if w > WF_MAX + 1e-9:
             raise NotImplementedError(f"compact StrongARM: reset / inverter NMOS wider than {WF_MAX} um")
     # input pair
-    m = 2 if c["w_in"] / 2 <= WF_IN_MAX + 1e-9 else 4 * math.ceil(c["w_in"] / (4 * WF_IN_MAX) - 1e-9)
+    m = 2 * math.ceil(c["w_in"] / (2 * WF_IN_MAX) - 1e-9)        # even fingers per device, each <= WF_IN_MAX
     wi = c["w_in"] / m
     seq = []
     for d in input_pattern(m):
@@ -444,14 +444,15 @@ def build_strongarm(c, name="strongarm"):
     for k, (net, nrow, prow) in enumerate((("xp", nl, pl), ("xn", nr, pr))):
         # several drains of the pair / the latch NMOS: met2 tracks over their diffusion bands
         tr = {}
-        for key, row, y, dyk in (("i", inp, yI, (1, -1)[k]), ("n", nrow, yN, -1)):
+        for key, row, y, dyk in (("i", inp, yI, 1), ("n", nrow, yN, -1)):      # mirror: same height both sides
             bs = row.bars(net)
             if len(bs) > 1:
                 yb = tr[key] = y + bs[0][2]["dy"] + dyk * BAND_DY
                 for x, n, f in bs:
                     v1(x, yb)
                 hline(yb, min(b[0] for b in bs), max(b[0] for b in bs), MET2, TRK)
-        if len(tr) == 2:                                  # common centroid: pair track -> latch track on met3
+        aligned = any(abs(b[0] - min(nrow.bars(net), key=lambda q: abs(q[0]))[0]) < 1e-6 for b in inp.bars(net))
+        if len(tr) == 2 and not aligned:                  # pair track -> latch track on met3
             ib_ = [b[0] for b in inp.bars(net)]
             xl = min((x for x, n, f in nrow.bars(net) if abs(abs(x) - xr) >= 0.7), key=abs)
             hline(tr["i"], min(ib_ + [xl]), max(ib_ + [xl]), MET2, TRK)    # (pair track reaches the link)
@@ -509,10 +510,11 @@ def build_strongarm(c, name="strongarm"):
     vline(0.0, y_lo - TRK / 2, y_hi + TRK / 2, MET2, TRK)          # outn: y_lo (left) -> y_hi (right) on the axis
     # the crossing puts outp on met3 (and outn on met2) between -XJ and +XJ: a met3 trim stub on outn's
     # right track balances the two output capacitances (tuned on the extracted layout)
-    if TRIM_L > 0:                                    # (start clear of the xn met1 column)
+    trim = TRIM_L0 + TRIM_DL * (R["fingers"]["latch_n"] - 1)
+    if trim > 0:                                      # (start clear of the xn met1 column)
         xs0 = max(XJ + M2_PAD + R_M2_SP, nr.bars("xn")[0][0] + 0.6)
         v2(xs0, y_hi)
-        hline(y_hi, xs0 - M3_PAD / 2, xs0 + TRIM_L, MET3, M3_PAD)
+        hline(y_hi, xs0 - M3_PAD / 2, xs0 + trim, MET3, M3_PAD)
     assert XJ - M2_PAD / 2 - TRK / 2 >= R_M2_SP
 
     # ---------------------------------------------------------------- output inverters: qp / qn met1 columns
