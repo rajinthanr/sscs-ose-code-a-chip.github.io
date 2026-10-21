@@ -227,6 +227,17 @@ the purpose anyway. The custom generator gives a DRC/LVS-clean, symmetric 73 um^
     - the top switch's power drops crossing the top-plate stub;
     - vdd's met3 hop landing on a phase bus.
   - Lesson: route power away from the top-plate net by construction, and run LVS on every assembly change.
+- **Extracted core across PVT** (4-bit, 17 points, the schematic sweep's corners, `studies/postlayout_pvt.py`):
+
+  | 17 PVT points | min ENOB | max DNL | max INL | max abs offset | power |
+  |---|---|---|---|---|---|
+  | schematic | 3.95 | 0.262 | 0.285 | 0.40 | 11.2 - 31.1 uW |
+  | extracted routed core | 3.95 | 0.129 | 0.123 | 0.21 | 20.4 - 45.0 uW |
+
+  - The hot-corner leakage still shows (fs / 125 C: DNL 0.13, offset -0.21 LSB, 45 uW) but at about half the
+    schematic's size. Likely reason (not separately tested): the ~20 fF of extracted wiring on the top plate
+    adds to its capacitance, so the same leakage current moves it less.
+  - DNL is resolved in steps of 1/16 LSB at 16 hits per code: 0.004 and 0.070 differ by one step.
 - **Post-layout power.** Linearity holds in the extracted cores, but power rises: 4-bit 13.9 -> 25.4 uW,
   6-bit 33.8 -> 63.1 uW (ENOB 6.02, DNL 0.048 LSB, INL 0.067 LSB). Supply charge per 4-bit ramp, by
   extraction step:
