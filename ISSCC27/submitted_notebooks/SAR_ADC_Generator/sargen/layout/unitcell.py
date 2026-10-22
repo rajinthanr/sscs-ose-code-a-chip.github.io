@@ -547,9 +547,7 @@ def build_unit_array(design, bits, name=None, grid=None):
     Returns (Component, info, reference netlist)."""
     from gdsfactory import Component
 
-    from ..pdk import MIM_MIN_SIDE
-    # every resolution uses the same unit cell: minimum-size PDK MIM cap, same switches
-    design = {**design, "cu": {**design["cu"], "side": MIM_MIN_SIDE}}
+    # the unit cap is the sized one (sizing.py: matching / kT/C / PDK minimum), as in the schematic
     grid = grid or rowwise_grid(bits)
     R, C = len(grid), len(grid[0])
     gates = [[unit_gates(g, bits) for g in row] for row in grid]
@@ -594,10 +592,8 @@ def build_unit_array(design, bits, name=None, grid=None):
             lo, hi = min(unused) - V1_M1[1] / 2, max(unused) + V1_M1[1] / 2
             rect(-V1_M2[0] / 2, min(unused) - V1_M2[1] / 2, V1_M2[0] / 2, max(unused) + V1_M2[1] / 2, MET2)
             for ty in [(rr * H + plan.ptap_y) for rr in range(R)]:       # p-taps (vss) on the same edge
-                if 0 <= ty - plan.tap_half - hi < R_M1_SP:
-                    hi = ty
-                if 0 <= lo - (ty + plan.tap_half) < R_M1_SP:
-                    lo = ty
+                if ty - plan.tap_half - hi < R_M1_SP and lo - (ty + plan.tap_half) < R_M1_SP:   # near or overlapping
+                    lo, hi = min(lo, ty), max(hi, ty)
             rect(-V1_M1[0] / 2, lo, V1_M1[0] / 2, hi, MET1)
 
     rail_pos += [("vin", (R - 1 - r) * H + plan.vin_y) for r in range(R)]
@@ -625,13 +621,15 @@ def build_unit_array(design, bits, name=None, grid=None):
     for k, (r, c) in enumerate(ring):
         plates[(r, c)] = _draw_dummy(top, plan, c * W, (R - 1 - r) * H, c % 2 == 1)
         lines.append(f"XCD_{k} vss vss sky130_fd_pr__cap_mim_m3_1 W={side} L={side} MF=1")
-    for (r, c), (x0_, x1_, y0_, y1_) in plates.items():      # met3 ring through the dummy plates
+    # met3 ring through the dummy plates: each gap filled along the whole facing edge (a narrow link would leave
+    # notches, and plates over 3 um count as wide met3 whose notches need 0.4 um, m3.3c/d)
+    for (r, c), (x0_, x1_, y0_, y1_) in plates.items():
         if (r, c + 1) in plates and r in (-1, R):
-            nx0 = plates[(r, c + 1)][0]
-            rect(x1_ - 0.1, (y0_ + y1_) / 2 - 0.5, nx0 + 0.1, (y0_ + y1_) / 2 + 0.5, MET3)
+            n = plates[(r, c + 1)]
+            rect(x1_ - 0.1, max(y0_, n[2]), n[0] + 0.1, min(y1_, n[3]), MET3)
         if (r + 1, c) in plates and c in (-1, C):
-            ny1 = plates[(r + 1, c)][3]
-            rect((x0_ + x1_) / 2 - 0.5, ny1 - 0.1, (x0_ + x1_) / 2 + 0.5, y0_ + 0.1, MET3)
+            n = plates[(r + 1, c)]
+            rect(max(x0_, n[0]), n[3] - 0.1, min(x1_, n[1]), y0_ + 0.1, MET3)
     # vertical supply lines -> met2 bars below the dummy row; the dummy ring drops onto the vss bar
     yb0 = -H - 0.6
     for i, net in enumerate(LINES):

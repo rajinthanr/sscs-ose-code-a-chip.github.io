@@ -138,11 +138,12 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
 
 
 def comparator_offset_mc(spec, design, workdir: Path, n_inst=24, n_jobs=8, vspan=None,
-                         n_steps=120) -> dict:
-    """Offset distribution of the sized comparator; returns offsets [V] for every instance."""
+                         n_steps=120, cmp_subckt=None) -> dict:
+    """Offset distribution of the sized comparator (or of `cmp_subckt`, e.g. its layout extraction);
+    returns offsets [V] for every instance."""
     tclk = 5e-9
     vspan = vspan or float(np.clip(6 * design["cmp"]["sigma_os_est"], 0.015, 0.2))
-    jobs = [dict(netlist=nl.comparator_mc_testbench(spec, design, n_inst, vspan, n_steps, tclk),
+    jobs = [dict(netlist=nl.comparator_mc_testbench(spec, design, n_inst, vspan, n_steps, tclk, cmp_subckt),
                  workdir=Path(workdir) / f"cmp_mc_{j}", seed=100 + j) for j in range(n_jobs)]
     offsets = []
     slope = 2 * vspan / (n_steps * tclk)

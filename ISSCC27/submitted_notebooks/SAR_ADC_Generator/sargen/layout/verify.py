@@ -83,13 +83,16 @@ quit -noprompt
     return dict(total=int(m.group(1)) if m else -1, rules=rules)
 
 
-def extract(gds, cell, outdir, parasitics=False) -> Path:
-    """magic extraction to SPICE (LVS netlist, or with parasitic C when parasitics=True)."""
+def extract(gds, cell, outdir, parasitics=False, resistance=False) -> Path:
+    """magic extraction to SPICE (LVS netlist, or with parasitic C when parasitics=True; with resistance=True
+    also wiring R networks: `extract do resistance` runs extresist, `ext2spice extresist on` writes them)."""
     gds, outdir = Path(gds).resolve(), Path(outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    suffix = "pex" if parasitics else "lvs"
+    suffix = ("rcx" if resistance else "pex") if parasitics else "lvs"
     out = outdir / f"{cell}_{suffix}.spice"
     pex = "extract do capacitance\nextract do coupling\next2spice cthresh 0\n" if parasitics else ""
+    if parasitics and resistance:
+        pex += "extract do resistance\next2spice extresist on\next2spice rthresh 0\n"
     tcl = outdir / f"{cell}_ext_{suffix}.tcl"
     tcl.write_text(f"""crashbackups stop
 gds read {gds}
