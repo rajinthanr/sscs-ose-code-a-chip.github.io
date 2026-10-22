@@ -78,7 +78,10 @@ def inl_dnl(hist_res, spec, path, title="code-density test"):
 def spectrum(fft_res, spec, path):
     fig, ax = plt.subplots(figsize=(8, 4.5))
     f = fft_res["freq_bins"] * spec.fs / 1e6
-    ax.plot(f[1:], fft_res["spectrum_dbfs"][1:], lw=1)
+    # bins with no power at all (the fs/2 bin of a half-wave-symmetric coherent record is exactly 0) would dive
+    # to the log floor (-300 dB): leave them out
+    db = np.where(fft_res["spectrum_dbfs"] < -250, np.nan, fft_res["spectrum_dbfs"])
+    ax.plot(f[1:], db[1:], lw=1)
     for k in fft_res["harmonic_bins"]:
         ax.plot(f[k], fft_res["spectrum_dbfs"][k], "rx")
     ax.set_xlabel("frequency [MHz]")
