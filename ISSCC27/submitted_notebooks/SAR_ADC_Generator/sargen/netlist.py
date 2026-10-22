@@ -14,7 +14,7 @@ bo_<i>       analog copy of output bit i, for read-out
 
 from dataclasses import dataclass
 
-from .pdk import MIM, NFET, PFET, STDCELL_SPICE, TG_FLAVORS, lib_line, mim, mos
+from .pdk import L_MIN, MIM, NFET, NFET_LVT, PFET, STDCELL_SPICE, TG_FLAVORS, lib_line, mim, mos
 
 TR = 50e-12  # edge time of ideal timing sources
 
@@ -44,6 +44,15 @@ def strongarm_subckt(c: dict) -> str:
         ".ends strongarm",
     ]
     return "\n".join(lines)
+
+
+def top_switch_lines(sw, fl):
+    """Top-plate switch to vcm: a transmission gate, or with top_flavor "nlvt" one LVT NMOS of width top_wn (the plate
+    only ever connects to the fixed vcm, so the PMOS - the hot-leakage path - is not needed)."""
+    flavor = sw.get("top_flavor", fl)
+    if flavor == "nlvt":
+        return [mos("Mttn", "top", "phit", "vcm", "0", NFET_LVT, sw["top_wn"], L_MIN)]
+    return tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], flavor)
 
 
 def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
@@ -117,7 +126,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
     fl = sw.get("flavor", "std")
     if cdacsw_pins:          # compact CDAC: every unit cap with its own switch (layout extraction)
         out += ["* ---- top-plate sampling switch (to vcm)"]
-        out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
+        out += top_switch_lines(sw, fl)
         out += ["* ---- CDAC with per-unit switches from layout extraction",
                 "Xcdacsw " + " ".join("0" if p == "vss" else p for p in cdacsw_pins) + " cdacsw"]
         if cp_top > 0:
@@ -128,7 +137,7 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
                 "Xsw " + " ".join("0" if p == "vss" else p for p in switch_pins(bits)) + " switches"]
     else:
         out.append("* ---- top-plate sampling switch (to vcm)")
-        out += tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], sw.get("top_flavor", fl))
+        out += top_switch_lines(sw, fl)
     for i in range(bits):
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
