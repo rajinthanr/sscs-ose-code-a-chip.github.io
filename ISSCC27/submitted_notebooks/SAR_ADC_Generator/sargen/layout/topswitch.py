@@ -40,12 +40,13 @@ def build_top_switch(design, name="topsw"):
     """Returns (Component, info, reference netlist).  Ports: top vcm phit phitb vdd vss."""
     from gdsfactory import Component
     from ..netlist import tg_lines
-    from ..pdk import TG_FLAVORS
+    from ..pdk import NFET_LVT, PFET_LVT, TG_FLAVORS
     sw = design["sw"]
     fl = sw.get("top_flavor", sw.get("flavor", "std"))
-    _, ln, _, lp = TG_FLAVORS[fl]
-    nrow = _fingers("Mttn", "n", sw["top_wn"], ln, fl, "phit", "bot")
-    prow = _fingers("Mttp", "p", sw["top_wp"], lp, fl, "phitb", "top")
+    nm, ln, pm, lp = TG_FLAVORS[fl]
+    # threshold per device: a flavour may mix an LVT NMOS with a standard-Vt PMOS
+    nrow = _fingers("Mttn", "n", sw["top_wn"], ln, "lvt" if nm == NFET_LVT else "std", "phit", "bot")
+    prow = _fingers("Mttp", "p", sw["top_wp"], lp, "lvt" if pm == PFET_LVT else "std", "phitb", "top")
     nrow.center()
     prow.center()
     for row in (nrow, prow):

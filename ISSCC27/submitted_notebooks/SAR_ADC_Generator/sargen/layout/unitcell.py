@@ -535,6 +535,8 @@ def unit_gates(g, bits):
 
 PHASES = ["phis", "phisb", "phig", "phigb"]
 TRUNK_W, TRUNK_PITCH = 0.32, 0.50       # met1 control trunks beside the array (via1 pads fit inside)
+ANT_DIFF, ANT_STAGGER = 0.42, 0.80       # antenna-diode diffusion; vertical offset of every other diode
+LICON = (66, 44)
 SUP_BAR_W, SUP_BAR_PITCH = 0.40, 0.80   # met2 supply bars below the array
 
 
@@ -601,7 +603,8 @@ def build_unit_array(design, bits, name=None, grid=None):
     nets = list(dict.fromkeys(n for n, _ in rail_pos))
     left = ["vin"] + [n for n in PHASES if n in nets]
     right = sorted((n for n in nets if n not in left), key=lambda n: (n.split("_")[-1], n))
-    edge = W + 0.3 + TRUNK_W / 2                  # outside the dummy-cap columns
+    edge = W + 0.4 + TRUNK_W / 2                  # outside the dummy-cap columns (0.4: wide-met3 spacing to the
+                                                  # channel pads on the trunks, m3.3d)
     tx = {n: snap(-edge - i * TRUNK_PITCH) for i, n in enumerate(left)}
     tx.update({n: snap(Wa + edge + i * TRUNK_PITCH) for i, n in enumerate(right)})
     for n, y in rail_pos:
@@ -613,6 +616,20 @@ def build_unit_array(design, bits, name=None, grid=None):
         lo, hi = min(ys) - V1_M1[1] / 2, max(ys) + V1_M1[1] / 2
         rect(tx[n] - TRUNK_W / 2, lo, tx[n] + TRUNK_W / 2, hi, MET1)
         _pin(top, n, tx[n], hi - 0.2, MET1, (0.14, 0.3))
+    # antenna diodes: a bit-control rail reaches the SAR logic (a driver's diffusion) only through a met3 hop in the
+    # core's channel, so while met1 / met2 are etched it hangs on a few switch gates (Magic antennacheck: met2 ratio
+    # > 400 at 6 and 8 bit). An n+ diffusion under each control trunk discharges it from met1 on. One row above the
+    # highest rail, staggered by trunk parity (diffusion spacing), under one shared n+ implant.
+    if right:
+        y_d = snap(max(y for _, y in rail_pos) + V1_M1[1] / 2 + 0.55)
+        for k, n in enumerate(right):
+            x, yd = tx[n], y_d + (k % 2) * ANT_STAGGER
+            rect(x - TRUNK_W / 2, max(y for m, y in rail_pos if m == n), x + TRUNK_W / 2, yd + 0.2, MET1)
+            for lay, w in ((DIFF, ANT_DIFF), (LICON, 0.17), (LI, 0.33), (MCON, 0.17)):
+                rect(x - w / 2, yd - w / 2, x + w / 2, yd + w / 2, lay)
+        xs_r = [tx[n] for n in right]
+        e = ANT_DIFF / 2 + 0.125
+        rect(min(xs_r) - e, y_d - e, max(xs_r) + e, y_d + ANT_STAGGER + e, NSDM)
     # dummy-cap ring: one ring of unit-cell-pitch MIM caps (plates shorted, on vss) around the array, mirrored
     # like the real columns, so every real unit sees real-unit neighbours (edge etch / density) on all sides
     side = design["cu"]["side"]

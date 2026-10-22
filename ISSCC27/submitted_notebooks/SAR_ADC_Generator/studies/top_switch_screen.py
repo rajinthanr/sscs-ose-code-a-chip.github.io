@@ -1,92 +1,88 @@
 #!/usr/bin/env python3
-"""Top-plate switch screen: which transmission-gate flavour (sargen.pdk.TG_FLAVORS) both holds the floating top plate
-when hot and settles it when cold?  For the sized switch of one resolution, at each corner:
-  hold  - switch off, top plate (C_total of the CDAC) started at Vcm +- 0.45 V and near either rail
-          (the top plate swings over Vcm +- Vref/2 during a conversion): its leakage
-          drift (after the first 10 %, which is charge sharing with the switch itself) scaled to one conversion, in LSB.  This leakage is what breaks the 8-bit core at 125 C.
-  track - switch on: R_on at Vcm from a 1 mV DC test, and the number of time constants R_on * C_total that fit in the
-          3/4 of the tracking phase the sizing gives the top switch; settling to 1/4 LSB needs ln(2^N / 0.25).
+"""Top-plate switch candidates screened by DC simulation (fast): on-resistance at Vcm at the cold / slow corners vs.
+off-state leakage at the hot corners, for transmission gates of different threshold flavours and channel lengths
+(PMOS twice as wide as NMOS, as in the generator).  With the switch sized to the on-resistance target, the predicted
+top-plate droop over one conversion is  I_leak * W_n * T_hold / C_total,  reported in LSB.
 Writes results/<N>bit/sweeps/top_switch_screen.md.  Run inside IIC-OSIC-TOOLS:  python3 studies/top_switch_screen.py 8
 """
-import dataclasses, json, math, sys
+import json, re, sys
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sargen import SarSpec, spice
-from sargen.netlist import tg_lines
-from sargen.pdk import NFET_LVT, lib_line, mos
+from sargen.pdk import NFET, NFET_LVT, PFET, PFET_LVT, lib_line, mos
 
-FLAVOURS = {"lvt": "LVT N + LVT P (sized)", "std": "SVT N + SVT P", "mix": "SVT N + LVT P", "mixp": "LVT N + SVT P",
-            "n1": "LVT NMOS only, W_n", "n2": "LVT NMOS only, 2 W_n"}
-
-
-def switch(fl, sw, a, b):
-    """the top-plate switch between a and b: a transmission gate, or an LVT NMOS alone (n1, n2: width x1, x2)"""
-    if fl in ("n1", "n2"):
-        return [mos("Mtn", a, "phit", b, "0", NFET_LVT, sw["top_wn"] * int(fl[1]), 0.15)]
-    return tg_lines("Mt", a, b, "phit", "phitb", sw["top_wn"], sw["top_wp"], fl)
-CORNERS = [("tt", 27, 1.0), ("ff", 125, 1.0), ("fs", 125, 1.0), ("sf", -40, 1.0), ("ss", -40, 1.0), ("ss", -40, 0.9)]
+N_OPT = [("SVT", NFET, 0.15), ("SVT", NFET, 0.30), ("LVT", NFET_LVT, 0.15), ("LVT", NFET_LVT, 0.30), ("LVT", NFET_LVT, 0.50)]
+P_OPT = [("SVT", PFET, 0.15), ("SVT", PFET, 0.30), ("LVT", PFET_LVT, 0.35), ("LVT", PFET_LVT, 0.50), ("LVT", PFET_LVT, 0.70)]
+COLD = [("ss", -40, 1.0), ("ss", 125, 1.0), ("tt", 27, 0.9)]      # the corners the sizing step uses (characterize.py)
+HOT = [("ff", 125, 1.0), ("fs", 125, 1.0), ("sf", 125, 1.0)]
+V_RES = 0.89             # top plate away from Vcm while the switch is off: a near-full-scale input on the first trial
 
 
-def hold_net(sp, sw, fl, c_top, v0, t_end):
-    return "\n".join([f"* top-plate hold, {fl}", lib_line(sp.corner), f".temp {sp.temp}", f"Vdd vdd 0 {sp.vdd}",
-                      f"Vcm vcm 0 {sp.vcm}", "Vphit phit 0 0", f"Vphitb phitb 0 {sp.vdd}",
-                      *switch(fl, sw, "top", "vcm"),
-                      f"Ctop top 0 {c_top:.6g}", f".ic v(top)={v0:.6g}", f".tran {t_end / 400:.4g} {t_end:.6g} uic",
-                      ".control", "set wr_singlescale", "set wr_vecnames", "run", "wrdata wave.txt v(top)", "quit",
-                      ".endc", ".end"])
+def gates(on):
+    """One TG per candidate pair (Wn = 1 um, Wp = 2 um), all between node a and its own b node."""
+    lines = []
+    for i, (_, nm, ln) in enumerate(N_OPT):
+        for j, (_, pm, lp) in enumerate(P_OPT):
+            k = f"{i}{j}"
+            lines += [f"Vs{k} b{k} a 0", mos(f"N{k}", f"b{k}", "gn", "x" + k, "0", nm, 1.0, ln),
+                      mos(f"P{k}", f"b{k}", "gp", "x" + k, "vdd", pm, 2.0, lp), f"Vx{k} x{k} 0 {{vx}}"]
+    return lines
 
 
-def track_net(sp, sw, fl):
-    return "\n".join([f"* top-plate switch on-resistance, {fl}", lib_line(sp.corner), f".temp {sp.temp}",
-                      f"Vdd vdd 0 {sp.vdd}", f"Vcm vcm 0 {sp.vcm}", f"Vt top vcm 1e-3", f"Vphit phit 0 {sp.vdd}",
-                      "Vphitb phitb 0 0", *switch(fl, sw, "topx", "vcm"),
-                      "Vm top topx 0", ".control", "op", "print i(Vm) > ron.txt", "quit", ".endc", ".end"])
+def run(corner, temp, scale, on, vx_offset, wd):
+    vdd = 1.8 * scale; vcm = vdd / 2
+    lines = ["* top switch screen", lib_line(corner), f".temp {temp}", f".param vx={vcm + vx_offset}", f"Vdd vdd 0 {vdd}",
+             f"Va a 0 {vcm}", f"Vgn gn 0 {vdd if on else 0}", f"Vgp gp 0 {0 if on else vdd}"] + gates(on)
+    # on: current through the gate (5 mV across it); off: everything that leaves the floating plate node, i.e. the
+    # channel and the plate-side junctions to substrate / n-well
+    names = [f"i(v{'s' if on else 'x'}{i}{j})" for i in range(len(N_OPT)) for j in range(len(P_OPT))]
+    lines += [".control", "op", "print " + " ".join(names) + " > cur.txt", "quit", ".endc", ".end"]
+    d = spice.run("\n".join(lines), Path(wd))
+    txt = (d / "cur.txt").read_text()
+    return {"i(vs" + n[4:]: abs(float(v)) for n, v in re.findall(r"(i\(v[sx]\d+\))\s*=\s*([-0-9.eE+]+)", txt)}
 
 
 def main(bits=8):
-    base = Path(f"build/{bits}bit"); d = json.loads((base / "design.json").read_text())
-    sw, c_top = d["sw"], d["cu"]["c_total"]
-    out = base / "studies" / "top_switch_screen"
-    rows, jobs, keys = [], [], []
-    for fl in FLAVOURS:
-        for c, t, s in CORNERS:
-            b = SarSpec(bits=bits)
-            sp = dataclasses.replace(b, corner=c, temp=float(t), vdd=b.vdd * s, vref=b.vref * s)
-            t_conv = (bits + 1) * sp.tclk
-            tag = f"{fl}_{c}_{t:+d}_{s:g}"
-            for v0, name in ((sp.vcm + 0.45, "hp"), (sp.vcm - 0.45, "hn"), (sp.vdd - 0.02, "hP"), (0.02, "hN")):
-                keys.append((fl, c, t, s, name)); jobs.append(dict(netlist=hold_net(sp, sw, fl, c_top, v0, t_conv),
-                                                                  workdir=out / f"{tag}_{name}"))
-            keys.append((fl, c, t, s, "track")); jobs.append(dict(netlist=track_net(sp, sw, fl), workdir=out / f"{tag}_on"))
-    res = {}
-    for k, wd in zip(keys, spice.run_many(jobs)):
-        if k[-1] == "track":
-            i = float(next(l for l in (Path(wd) / "ron.txt").read_text().splitlines() if "=" in l).split("=")[1])
-            res.setdefault(k[:4], {})["ron"] = 1e-3 / abs(i)
-        else:
-            w = spice.read_wrdata(Path(wd) / "wave.txt")
-            # leakage = the slow drift after the initial charge sharing with the switch's own capacitances (first 10 %),
-            # scaled to the whole conversion
-            t = w["time"]; v10 = np.interp(0.1 * t[-1], t, w["top"])
-            res.setdefault(k[:4], {}).setdefault("drift", []).append(abs(w["top"][-1] - v10) / 0.9)
-    need = math.log(2**bits / 0.25)
-    md = [f"| top-plate switch | corner | R_on at Vcm [Ohm] | time constants in the tracking window (need {need:.1f}) "
-          "| droop over one conversion [LSB] | verdict |", "|---|---|---|---|---|---|"]
-    for (fl, c, t, s), r in res.items():
-        sp = SarSpec(bits=bits)
-        n_tau = 0.75 * d["timing"]["t_track"] / (r["ron"] * c_top)
-        droop = max(r["drift"]) / (sp.lsb * s)
-        ok = bool(n_tau >= need and droop < 0.25)
-        r.update(n_tau=n_tau, droop_lsb=droop, ok=ok)
-        md.append(f"| {FLAVOURS[fl]} | {c} {t:+d}C {1.8 * s:.2f}V | {r['ron']:.0f} | {n_tau:.1f} | {droop:.3f} | "
-                  f"{'ok' if ok else ('leaks' if droop >= 0.25 else 'too slow')} |")
-    md.append(f"\nSized switch W_n / W_p = {sw['top_wn']} / {sw['top_wp']} um, C_total = {c_top * 1e12:.2f} pF; "
-              "droop limit 1/4 LSB; time constants from 3/4 of the tracking phase.")
-    dst = Path(f"results/{bits}bit/sweeps/top_switch_screen.md"); dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("\n".join(md) + "\n")
-    (out / "screen.json").write_text(json.dumps({"|".join(map(str, k)): v for k, v in res.items()}, indent=1, default=float))
-    print(dst.read_text())
+    spec = SarSpec(bits=bits)
+    design = json.loads(Path(f"build/{bits}bit/design.json").read_text())
+    r_top = 0.0
+    for e in design["log"]:
+        if "R_top" in e["result"]:
+            r_top = float(e["result"].split("R_top <=")[1].split("Ohm")[0])
+    c_tot = design["cu"]["c_total"]
+    t_hold = (spec.cycles - 1) * spec.tclk          # the top plate floats from the end of sampling to the last decision
+    base = Path(f"build/{bits}bit/studies/top_switch_screen")
+    ron = {}
+    for c, t, s in COLD:                              # 5 mV across each on-gate -> R = 5 mV / I
+        cur = run(c, t, s, True, 0.005, base / f"on_{c}_{t}_{s}")
+        for k, i in cur.items():
+            ron[k] = max(ron.get(k, 0), 0.005 / i)
+    leak = {}
+    for c, t, s in HOT:
+        for sgn in (+1, -1):
+            cur = run(c, t, s, False, sgn * V_RES, base / f"off_{c}_{t}_{s}_{'p' if sgn > 0 else 'n'}")
+            for k, i in cur.items():
+                leak[k] = max(leak.get(k, 0), i)
+    rows = []
+    for i, (nf, nm, ln) in enumerate(N_OPT):
+        for j, (pf, pm, lp) in enumerate(P_OPT):
+            k = f"i(vs{i}{j})"
+            wn = max(ron[k] / r_top, 0.42)                     # sized like the generator: R_on * W / R_top
+            droop = leak[k] * wn * t_hold / c_tot / spec.lsb
+            rows.append(dict(n=f"{nf} N, L {ln}", p=f"{pf} P, L {lp}", ron_kohm_um=ron[k] / 1e3, leak_na_um=leak[k] * 1e9,
+                             wn=wn, droop_lsb=droop))
+    rows.sort(key=lambda r: r["droop_lsb"])
+    md = [f"Top-plate switch candidates for the {bits}-bit design: R_top <= {r_top:.0f} Ohm, C_total {c_tot * 1e12:.2f} pF, "
+          f"hold {t_hold * 1e9:.0f} ns, LSB {spec.lsb * 1e3:.2f} mV.", "",
+          "| NMOS | PMOS | R_on*Wn, cold worst [kOhm um] | plate leakage per um Wn, hot worst [nA/um] | Wn needed [um] | droop per conversion [LSB] |",
+          "|---|---|---|---|---|---|"]
+    md += [f"| {r['n']} | {r['p']} | {r['ron_kohm_um']:.2f} | {r['leak_na_um']:.3g} | {r['wn']:.1f} | {r['droop_lsb']:.3f} |" for r in rows]
+    md.append(f"\nCold: {', '.join(f'{c} {t:+d} C x{s}' for c, t, s in COLD)}; hot: {', '.join(f'{c} {t:+d} C' for c, t, s in HOT)}; "
+              f"off-state with the plate {V_RES} V above or below Vcm (worst sign).")
+    out = Path(f"results/{bits}bit/sweeps/top_switch_screen.md"); out.write_text("\n".join(md) + "\n")
+    (base / "rows.json").write_text(json.dumps(rows, indent=1))
+    print(out.read_text())
 
 
 if __name__ == "__main__":

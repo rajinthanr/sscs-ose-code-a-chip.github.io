@@ -20,6 +20,9 @@ AVT_GEOMS = [(2.0, 0.5), (4.0, 1.0)]   # (W, L) in um
 # switches are sized for the worst on-resistance over these (corner, temp, vdd scale) conditions
 RON_WORST_CASES = [("ss", -40.0, 1.0), ("ss", 125.0, 1.0), ("tt", 27.0, 0.9)]
 N_MC = 200                              # instances per geometry
+# off-state leakage of the switches that hold the floating top plate is worst at these hot, fast corners
+LEAK_CASES = [("ff", 125.0, 1.0), ("fs", 125.0, 1.0)]
+LEAK_STEPS = 10                         # plate offsets Vref / 2^(k+1) from Vcm, k = 0 .. LEAK_STEPS - 1
 
 
 def _avt_netlist(corner, temp, vdd):
@@ -54,6 +57,19 @@ def _ron_netlist(corner, temp, vdd):
         "quit", ".endc", ".end"])
 
 
+def _leak_netlist(corner, temp, vdd):
+    """Off-state current out of a floating plate through each TG flavour (Wn = 1 um, Wp = 2 um): the plate is swept
+    across the supply while the other side sits at Vcm; channel and plate-side junctions are both included."""
+    tgs = []
+    for fl, (nm, ln, pm, lp) in TG_FLAVORS.items():
+        tgs += [f"Vm_{fl} x m_{fl} 0", mos(f"Tn_{fl}", "a", "0", f"m_{fl}", "0", nm, 1, ln),
+                mos(f"Tp_{fl}", "a", "vdd", f"m_{fl}", "vdd", pm, 2, lp)]
+    return "\n".join([
+        "* switch off-state leakage", lib_line(corner), f".temp {temp}", f"Vdd vdd 0 {vdd}", f"Va a 0 {vdd / 2}",
+        "Vx x 0 0", *tgs, ".control", f"dc Vx 0 {vdd} 0.005", "set wr_singlescale", "set wr_vecnames",
+        "wrdata leak.txt " + " ".join(f"i(Vm_{fl})" for fl in TG_FLAVORS), "quit", ".endc", ".end"])
+
+
 def _mim_netlist(corner, temp):
     sides = [(5, 5), (20, 20), (5, 40)]
     lines = ["* MIM capacitance", lib_line(corner), f".temp {temp}"]
@@ -70,19 +86,22 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
     """Run (or load cached) PDK characterization for this corner/temperature/supply."""
     workdir = Path(workdir)
     cache = workdir / f"pdk_char_{spec.corner}_{spec.temp:g}C_{spec.vdd:g}V.json"
-    if cache.exists() and not force:
-        cached = json.loads(cache.read_text())
-        if isinstance(cached.get("ron_tg_worst_ohm_um"), dict):
-            return cached
+    cached = json.loads(cache.read_text()) if cache.exists() else None
+    if cached and not force and isinstance(cached.get("ron_tg_worst_ohm_um"), dict) and \
+            set(cached.get("tg_leak_hot_a_per_um", {})) == set(TG_FLAVORS):
+        return cached
 
     mim_txt, sides = _mim_netlist(spec.corner, spec.temp)
     worst_jobs = [dict(netlist=_ron_netlist(c, t, spec.vdd * k), workdir=workdir / f"ron_{c}_{t:g}C_{k:g}")
                   for c, t, k in RON_WORST_CASES]
-    d_avt, d_ron, d_mim, *d_worst = run_many([
+    leak_jobs = [dict(netlist=_leak_netlist(c, t, spec.vdd * k), workdir=workdir / f"leak_{c}_{t:g}C_{k:g}")
+                 for c, t, k in LEAK_CASES]
+    d_avt, d_ron, d_mim, *d_rest = run_many([
         dict(netlist=_avt_netlist(spec.corner, spec.temp, spec.vdd), workdir=workdir / "avt", seed=1),
         dict(netlist=_ron_netlist(spec.corner, spec.temp, spec.vdd), workdir=workdir / "ron"),
         dict(netlist=mim_txt, workdir=workdir / "mim"),
-    ] + worst_jobs)
+    ] + worst_jobs + leak_jobs)
+    d_worst, d_leak = d_rest[:len(worst_jobs)], d_rest[len(worst_jobs):]
 
     # --- A_VT: sigma(dVT) of a pair = sqrt(2) * sigma(single); A_VT = sigma(dVT) * sqrt(WL)
     op = read_print(d_avt / "op.txt")
@@ -102,18 +121,34 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
 
     # --- worst-case on-resistance over corners / temperature / low supply
     worst = dict(n=r_n, p=r_p, where=dict(n="nominal", p="nominal"))
+    at_vcm = {}                         # a switch that only ever passes Vcm (the top-plate switch): R_on at Vcm
     for fl in TG_FLAVORS:
         worst[f"tg_{fl}"] = float((0.005 / np.abs(r[f"i(vt_{fl})"])).max())
         worst["where"][f"tg_{fl}"] = "nominal"
+        at_vcm[fl] = float(0.005 / np.abs(np.interp(spec.vcm, vin, r[f"i(vt_{fl})"])))
     for (c_, t_, k_), d in zip(RON_WORST_CASES, d_worst):
         rw = read_wrdata(d / "ron.txt")
         vin_w = rw[list(rw)[0]]
         vals = {f"tg_{fl}": (0.005 / np.abs(rw[f"i(vt_{fl})"]))[vin_w <= spec.vref * k_].max()
                 for fl in TG_FLAVORS}
         vals.update(n=0.005 / abs(rw["i(vn)"][0]), p=0.005 / abs(rw["i(vp)"][0]))
+        for fl in TG_FLAVORS:
+            at_vcm[fl] = max(at_vcm[fl], float(0.005 / np.abs(np.interp(spec.vcm * k_, vin_w, rw[f"i(vt_{fl})"]))))
         for key, v in vals.items():
             if v > worst[key]:
                 worst[key], worst["where"][key] = float(v), f"{c_} {t_:g}C {spec.vdd * k_:.2f}V"
+
+    # --- hot off-state leakage per um of NMOS width, with the plate Vref/2^(k+1) above or below Vcm (worse sign)
+    offsets = [spec.vref / 2 ** (k + 1) for k in range(LEAK_STEPS)]
+    leak = {fl: [0.0] * LEAK_STEPS for fl in TG_FLAVORS}
+    for d in d_leak:
+        lw = read_wrdata(d / "leak.txt")
+        vx = lw[list(lw)[0]]
+        for fl in TG_FLAVORS:
+            i_abs = np.abs(lw[f"i(vm_{fl})"])
+            for k, dv in enumerate(offsets):
+                v = max(np.interp(spec.vcm + dv, vx, i_abs), np.interp(spec.vcm - dv, vx, i_abs))
+                leak[fl][k] = max(leak[fl][k], float(v))
 
     # --- MIM: C = ca*W*L + cp*2(W+L), least squares over the three geometries
     c = read_print(d_mim / "mim.txt")
@@ -130,9 +165,15 @@ def characterize_pdk(spec, workdir: Path, force=False) -> dict:
         ron_tg_worst_ohm_um={fl: float(worst[f"tg_{fl}"]) for fl in TG_FLAVORS},
         ron_n_worst_ohm_um=float(worst["n"]),
         ron_p_worst_ohm_um=float(worst["p"]), ron_worst_where=worst["where"],
+        ron_tg_vcm_worst_ohm_um=at_vcm, tg_leak_hot_a_per_um=leak, tg_leak_offsets_v=offsets,
+        tg_leak_where=", ".join(f"{c} {t:g}C" for c, t, _ in LEAK_CASES),
         mim_ca_fF_um2=float(ca * 1e15), mim_cp_fF_um=float(cperim * 1e15),
         mim_match_pct_um=mim_matching_pct_um(),
     )
+    if cached and not force:
+        # only the switch data was missing: keep the cached A_VT and MIM numbers, so adding a switch flavour does not
+        # re-draw the A_VT Monte Carlo (and re-size the comparator)
+        res.update({k: v for k, v in cached.items() if k.startswith(("avt_", "mim_"))})
     cache.write_text(json.dumps(res, indent=1))
     return res
 

@@ -79,7 +79,8 @@ noise is not simulated; extraction is capacitance only (no wiring resistance).
 - [x] DRC/LVS (KLayout incl. capm.10, Magic, Netgen) and PEX, post-layout re-simulation
 - [x] top-plate switch, SAR logic (LibreLane), routed 4- and 6-bit cores, DRC 0 / LVS match; full-core
       post-layout simulation (4 bit: ENOB 3.98, DNL 0.04 LSB)
-- [ ] top-plate switch sizing that holds at hot and cold corners (see `studies/top_switch_leakage.py`)
+- [x] top-plate switch sizing that holds at hot and cold corners (leakage-aware rule, `studies/top_switch_trials.py`)
+- [x] antenna check of the routed cores, antenna diodes on the CDAC control trunks
 - [ ] TinyTapeout tile integration (pins, analog ground, Vref decoupling)
 - [x] 4..8-bit scaling (ENOB / power / capacitance / FoM trends)
 - [x] robustness: PVT, input frequency, sample rate, comparator delay, transistor-level mismatch runs

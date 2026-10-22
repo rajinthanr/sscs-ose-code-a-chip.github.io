@@ -8,6 +8,9 @@ import math
 
 from .pdk import L_MIN, MIM_MIN_SIDE, W_MIN
 
+TOP_DROOP_LSB = 0.25    # hot leakage of the top-plate switch may move the floating plate by at most this per conversion
+TOP_W_CAP = 4.0         # top-plate switch flavours considered: at most this many times as wide as the narrowest
+
 K_B = 1.380649e-23
 
 
@@ -87,14 +90,31 @@ def size_sar(spec, char: dict) -> dict:
     log.add("sampling", "TG device flavour = lowest worst-case R_on W (ss/-40C, ss/125C, tt/-10% supply)",
             ", ".join(f"{k}: {v / 1e3:.1f} kOhm um" for k, v in worst.items()), f"{flavor} transistors")
     in_wn = _ceil(max(rw_tg / r_unit, W_MIN))
-    top_wn = _ceil(max(rw_tg / r_top, W_MIN))
     log.add("sampling", "tau = T_track / ln(2^N / settle_lsb); 1/4 bit switch, 3/4 top switch",
             f"T_track = {t_track * 1e9:.2f} ns, tau <= {tau_s * 1e12:.0f} ps",
             f"R_unit <= {r_unit / 1e3:.1f} kOhm, R_top <= {r_top:.0f} Ohm")
     log.add("sampling", "W_n = (R_on W)_TG,worst / R  (Wp = 2 Wn), bit-i switch = 2^i units",
             f"worst (R_on W) = {rw_tg / 1e3:.2f} kOhm um ({char['ron_worst_where'].get('tg_' + flavor, 'tt')})",
-            f"unit TG {in_wn:.2f}/{2 * in_wn:.2f} um, "
-            f"top TG {top_wn:.2f}/{2 * top_wn:.2f} um")
+            f"unit TG {in_wn:.2f}/{2 * in_wn:.2f} um")
+    # The top-plate switch only ever passes Vcm, so it is sized for its on-resistance at Vcm; but it alone holds the
+    # floating top plate during the conversion, so it must not leak when hot. Worst case: a near-full-scale input
+    # leaves the plate Vref / 2^(k+1) from Vcm while bit k is tried (one clock period each); the leaked charge over
+    # C_total is estimated per flavour (pessimistic: the leakage falls as the plate drifts back). Among flavours at
+    # most TOP_W_CAP x wider than the narrowest, the least leaky one is taken (verified at 4, 6 and 8 bit,
+    # studies/top_switch_trials.py: hot and cold corners).
+    leak = char["tg_leak_hot_a_per_um"]
+    cand = []
+    for fl, rw in char["ron_tg_vcm_worst_ohm_um"].items():
+        wn = _ceil(max(rw / r_top, W_MIN))
+        cand.append((fl, rw, wn, sum(leak[fl][:N]) * wn * T / c_tot / lsb))
+    w_cap = TOP_W_CAP * min(c[2] for c in cand)
+    top_flavor, rw_top, top_wn, droop = min((c for c in cand if c[2] <= w_cap), key=lambda c: c[3])
+    log.add("sampling", f"top-plate switch: sized at Vcm; least hot-leakage flavour among those <= {TOP_W_CAP:g}x the "
+                        f"narrowest (plate droop per conversion, {char.get('tg_leak_where', 'hot')}, plate Vref/2^(k+1) "
+                        f"from Vcm while bit k is tried; budget {TOP_DROOP_LSB} LSB)",
+            ", ".join(f"{f}: {w:.1f} um, {d:.2g} LSB" for f, _, w, d in cand),
+            f"{top_flavor}: top TG {top_wn:.2f}/{2 * top_wn:.2f} um ({rw_top / 1e3:.2f} kOhm um at Vcm, {droop:.3f} LSB"
+            f"{'' if droop <= TOP_DROOP_LSB else ' - OVER BUDGET'})")
 
     # ---------------------------------------------------------------- DAC drivers
     t_dac = 0.45 * T                          # DAC must settle before the comparator clock
@@ -108,7 +128,8 @@ def size_sar(spec, char: dict) -> dict:
 
     design = dict(
         bits=N, cu=dict(side=side, c=cu, c_total=c_tot, sigma_u=a_c / side),
-        cmp=cmp_, sw=dict(in_wn=in_wn, in_wp=2 * in_wn, top_wn=top_wn, top_wp=2 * top_wn, flavor=flavor),
+        cmp=cmp_, sw=dict(in_wn=in_wn, in_wp=2 * in_wn, top_wn=top_wn, top_wp=2 * top_wn, flavor=flavor,
+                          top_flavor=top_flavor),
         drv=drv, l_sw=L_MIN,
         timing=dict(tclk=T, t_track=t_track, t_dac=t_dac),
         noise=dict(ktc_rms=math.sqrt(kT / c_tot)),

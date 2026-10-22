@@ -17,7 +17,14 @@ PFET_LVT = "sky130_fd_pr__pfet_01v8_lvt"
 # transmission-gate flavours: (nmos model, L_n, pmos model, L_p); pfet_01v8_lvt needs L >= 0.35 um
 TG_FLAVORS = {"std": (NFET, 0.15, PFET, 0.15), "lvt": (NFET_LVT, 0.15, PFET_LVT, 0.35),
               "mix": (NFET, 0.15, PFET_LVT, 0.35),   # SVT NMOS + LVT PMOS (top-switch leakage study)
-              "mixp": (NFET_LVT, 0.15, PFET, 0.15)}  # LVT NMOS (conducts cold) + SVT PMOS (low hot leakage)
+              "mixp": (NFET_LVT, 0.15, PFET, 0.15),  # LVT NMOS (conducts cold) + SVT PMOS
+              # LVT NMOS + SVT PMOS at L = 0.3 um: short SVT / LVT PMOS leak strongly when hot (DIBL) with the plate
+              # near a rail; at 0.3 um the off-state leakage drops ~10^4 x (studies/top_switch_screen.py)
+              "mixl": (NFET_LVT, 0.30, PFET, 0.30),
+              # LVT gates with a longer LVT PMOS: still conducts near the top rail when cold (kick recovery at the
+              # start of sampling), less hot leakage than L = 0.35 um
+              "lvtp5": (NFET_LVT, 0.15, PFET_LVT, 0.50), "lvtp7": (NFET_LVT, 0.15, PFET_LVT, 0.70),
+              "lvtp10": (NFET_LVT, 0.15, PFET_LVT, 1.00)}
 MIM = "sky130_fd_pr__cap_mim_m3_1"
 
 L_MIN = 0.15          # um, 1.8 V devices

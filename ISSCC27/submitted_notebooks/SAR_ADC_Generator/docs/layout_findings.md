@@ -128,10 +128,8 @@ comparator, topsw, sarlogic, then core; `python collect_layout.py N`; `python ru
 
 ## 6. Open items
 
-- **Leakage on the floating top plate.** Diagnosed (section 6c): the top-plate switch's LVT PMOS leaks at
-  fs / ff 125 C, and a standard-Vt PMOS does not settle at ss / -40 C. Decision (2026-10-21): keep the sized
-  LVT switch; the extracted 4-bit core stays within DNL 0.13 LSB at every corner. Options for a later
-  revision: a wider standard-Vt or longer-L LVT PMOS, or a bootstrapped switch.
+- **Leakage on the floating top plate.** Resolved 2026-10-23 by a leakage-aware switch rule (section 6f); a
+  bootstrapped switch would recover the remaining hot-corner ENOB at 8 bit (7.51 vs 7.98 nominal).
 - **8-bit post-layout.** The 8-bit core is assembled and clean (section 6d); its extracted transistor-level
   simulation is the remaining check.
 - **Remaining blocks:** TinyTapeout tile integration (pins, analog ground, Vref decoupling).
@@ -289,6 +287,52 @@ the same topology at every resolution, so the 8-bit comparator needs no separate
 - **Top-plate switch at 8 bits** (17 NMOS + 34 PMOS fingers): two tracks let an NMOS drop to the far track pass
   a PMOS drop of the other net at the same x. Three tracks fix it for any finger count: NMOS vcm, shared top,
   PMOS vcm (0.46 um apart so via pads of drops at one x stay clear), the two vcm tracks joined on met3.
+
+## 6e. Antenna check (2026-10-23)
+
+- **Check:** Magic `antennacheck` with the SKY130 tech-file rules (poly, li, met1-met5 sidewall and via surface
+  ratios) on the routed cores. Only the SAR logic had been checked before (by LibreLane).
+- **Found:** 4-bit clean; 6-bit 4 and 8-bit 6 violations, all met2 ratios of 485-529 against a limit of 400, all on
+  gates inside the CDAC array. They are the least-significant bits' control rails: each runs the full row width but
+  drives only one or two switch gates, and it reaches the SAR logic (a driver's diffusion) only through a met3
+  hop in the core's routing channel, so while met1 / met2 are etched it is a floating antenna.
+- **Fix in the generator** (`unitcell.py`): an n+ diffusion (antenna diode, 0.42 um) under each bit-control trunk
+  beside the array, contacted up to the met1 trunk, so every rail is discharged from met1 on. The diodes sit in one
+  row above the highest rail, staggered by trunk parity (diffusion spacing) under one shared n+ implant. Magic
+  extracts them as diffusion on the net, not as devices, so LVS is unchanged.
+- **Side effect caught by DRC:** the dummy ring's met3 gap fill (section 3) makes the ring one wide met3 shape,
+  which needs 0.4 um to unrelated met3 (m3.3d); the core's channel pad on the first trunk was 0.36 um away at
+  6 bit. The trunks now start 0.4 um (was 0.3) outside the dummy columns.
+- **Result:** 4-, 6- and 8-bit arrays and cores DRC 0 (KLayout and Magic), LVS match, 0 antenna violations.
+
+## 6f. Top-plate switch: leakage-aware sizing (2026-10-23)
+
+- **Failure:** with the sized LVT switch the 8-bit schematic lost codes at the hot fast corners
+  (ff / fs 125 C: ENOB 6.52 / 5.78, DNL 1.0, INL 2.9 / 6.0 LSB); 4 bit showed the same effect weakly (DNL 0.26).
+- **Mechanism** (DC screen, `studies/top_switch_screen.py`): with the switch off and the floating plate near a rail -
+  the first trials of a near-full-scale input put it 0.9 V from Vcm - short PMOS devices leak strongly when hot
+  (drain-induced barrier lowering): 1.9 uA per um of NMOS width for the LVT gate (LVT PMOS, L 0.35 um), 85 nA/um for
+  a standard-Vt PMOS at L 0.15 um, 0.13 nA/um for a standard-Vt PMOS at L 0.3 um. At 0.45 V the same gates leak
+  10^3-10^4 x less, which is why a mid-scale screen first missed it.
+- **Characterization** now adds each flavour's off-state current with the plate swept across the supply at ff / fs
+  125 C, and the on-resistance at Vcm (the only voltage the top switch passes). A_VT / MIM numbers are kept from the
+  cache so that adding a flavour does not re-draw the Monte Carlo.
+- **Rule** (`sizing.py`): size the top switch at Vcm; among the flavours at most 4x wider than the narrowest, take
+  the one whose estimated hot droop (plate Vref/2^(k+1) from Vcm while bit k is tried) is smallest. It picks LVT
+  NMOS + standard-Vt PMOS, both L 0.3 um (`mixl`): 0.65 / 4.35 / 47.3 um NMOS at 4 / 6 / 8 bit.
+- **Trials** (`studies/top_switch_trials.py`, fs / 125 C and ss / -40 C):
+
+  | switch | 4 bit | 6 bit | 8 bit |
+  |---|---|---|---|
+  | LVT (original) | ENOB 3.95 / 3.98 | - | ENOB 5.78 / 7.86 |
+  | LVT N + SVT P, L 0.15 | 3.98 / **3.56** | - | - |
+  | LVT N + LVT P L 0.7, full-range sized | 3.97 / 3.98 | 5.90 / 5.89 | 7.71 / 7.50 (lost first transition) |
+  | LVT N + LVT P L 1.0, full-range sized | - | - | 6.26 / 7.28 |
+  | **mixl, sized at Vcm (chosen)** | **3.97 / 4.01** | **5.97 / 5.97** | **7.51 / 7.73** |
+
+  Lessons: the short standard-Vt PMOS fails cold at 4 bit; sizing the long-LVT variants on the full-range
+  on-resistance makes them so wide that their remaining leakage dominates. Full corner tables:
+  `results/<N>bit/sweeps/top_switch_verify.md`.
 
 ## 7. References
 
