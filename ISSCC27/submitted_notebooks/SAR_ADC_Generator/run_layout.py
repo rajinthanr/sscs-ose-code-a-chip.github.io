@@ -42,10 +42,10 @@ def do_comparator(bits, out):
     comp.write_gds(gds)
     info["gen_s"] = time.time() - t0
     ref = out / "strongarm_ref.spice"
-    from sargen.pdk import NFET, mos
+    from sargen.pdk import NFET, PFET, mos
     sub = nl.strongarm_subckt(design["cmp"]).replace(   # layout dummies (shorted, symmetric) for LVS
-        ".ends strongarm", "\n".join(mos(n, d, g, s_, "vss", NFET, w, l) for n, d, g, s_, w, l in info["dummies"])
-        + "\n.ends strongarm")
+        ".ends strongarm", "\n".join(mos(n, d, g, s_, *(("vss", NFET) if k == "n" else ("vdd", PFET)), w, l)
+                                     for n, d, g, s_, w, l, k in info["dummies"]) + "\n.ends strongarm")
     ref.write_text(sub + "\n")
     print(f"generated {gds} in {info['gen_s']:.1f} s: {info['width']:.2f} x {info['height']:.2f} um, "
           f"fingers {info['fingers']}")
@@ -178,7 +178,9 @@ def do_cdacu(bits, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw", "sarlogic", "core"])
+    ap.add_argument("block", choices=["cdac", "comparator", "switches", "cdacsw", "unitcell", "unitabut", "cdacu", "topsw", "sarlogic", "core", "lod"],
+                    help="lod: per-finger length of diffusion of the drawn devices -> layout/lod.json (and lod_before.json, "
+                         "the layout before the matching rework), for studies/lod_matching.py and lod_system.py")
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--rows", type=int, default=2, help="unitabut: rows of abutted unit cells")
     ap.add_argument("--cols", type=int, default=3, help="unitabut: columns (alternate columns mirrored)")
@@ -187,6 +189,13 @@ def main():
     a = ap.parse_args()
     out = Path(f"build/{a.bits}bit/layout")
     out.mkdir(parents=True, exist_ok=True)
+    if a.block == "lod":
+        from sargen.layout import lod
+        design = json.loads(Path(f"build/{a.bits}bit/design.json").read_text())
+        lod.write(design, out / "lod.json")
+        lod.write(design, out / "lod_before.json", matched=False)
+        print(f"wrote {out / 'lod.json'}, {out / 'lod_before.json'}")
+        return
     gds, ref, cell, info = {"cdac": do_cdac, "comparator": do_comparator, "switches": do_switches,
                             "cdacsw": do_cdacsw, "unitcell": do_unit,
                             "unitabut": lambda b, o: do_unit(b, o, a.rows, a.cols),

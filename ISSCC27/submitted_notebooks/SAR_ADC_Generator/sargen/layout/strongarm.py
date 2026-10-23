@@ -44,6 +44,7 @@ XJ = 0.46               # output tracks swap between x = -XJ and +XJ
 IN_PITCH = 0.40         # common-centroid pair: inp / inn tracks below the comb level
 BAND_DY = 0.42          # extra met2 tracks over a diffusion band (xp / xn), off its centre (slim via2 fits)
 EXIT = 0.8              # inp / inn / clk / qp / qn leave the cell on met2 this far past its edge
+AXIS_CLEAR = 1.2        # latch inner dummy only if its diffusion ends this far from the axis (output crossover, links)
 TRIM_L0, TRIM_DL = 0.80, 0.05   # met3 trim stub on outn: 0.80 um + 0.05 um per extra latch finger, tuned on
                                  # extraction (outp / outn within 0.1 %: 1 finger 4 / 6 bit, 9 fingers 8 bit)
 
@@ -207,7 +208,7 @@ def input_pattern(m):
     return ["A"] * (m // 2) + ["B"] * (m // 2)
 
 
-def strongarm_rows(c):
+def strongarm_rows(c, end_dummies=True, compact=True):
     """Device rows of the StrongARM (left halves mirrored where the circuit is left/right symmetric).
 
     One architecture for every resolution: the sizing (design['cmp']) sets the widths, this sets the
@@ -216,7 +217,8 @@ def strongarm_rows(c):
     no wider than WF_MAX, so the xp / output bars keep their places."""
     L, Lin = c["l"], c["l_in"]
     swap = {"inp": "inn", "xp": "xn", "outp": "outn", "qp": "qn", "Mon1": "Mon2", "Mn1": "Mn2", "Mop1": "Mop2",
-            "Mp1": "Mp2", "Mr1": "Mr2", "Mr3": "Mr4", "Mdl1": "Mdl2", "d_outn": "d_outp"}
+            "Mp1": "Mp2", "Mr1": "Mr2", "Mr3": "Mr4", "Mdl1": "Mdl2", "d_outn": "d_outp",
+            "Mdx1": "Mdx2", "Mdp1": "Mdp2", "Mdq1": "Mdq2"}
     swap.update({v: k for k, v in list(swap.items())})
 
     def sw(n):
@@ -258,9 +260,26 @@ def strongarm_rows(c):
     wn = c["w_ln"] / kn
     mn = [(f"Mn1.{i}", dev("Mn1", "n", wn, L), "outp", "top", ("outn", "xp")[i % 2], ("xp", "outn")[i % 2])
           for i in range(kn)]
+    # a dummy finger at both ends of the latch device (outer: Mdl1 on outn; inner: Mdx1 on xp, gate on Mn1's gate
+    # net): every Mn1 finger has a gate on either side and the end fingers' diffusion runs one pitch further
+    # (end_dummies=False: the earlier layout, outer dummy only - kept for the matching study)
     nl = Row([("Mon1", dev("Mon1", "n", c["w_inv_n"], L), "outp", "top", "qp", "vss"),
-              ("Mdl1", dev("Mdl", "n", wn, L), "outp", "top", "d_outn", "outn")] + mn, align="top")
+              ("Mdl1", dev("Mdl", "n", wn, L), "outp", "top", "d_outn", "outn")] + mn +
+             ([("Mdx1", dev("Mdx", "n", wn, L), "outp", "top", "xp", "xp")] if end_dummies else []), align="top")
     nl.anchor(f"Mn1.{kn - 1}", "R", x_xp)
+    dx_ = nl.by.get("Mdx1")
+    if dx_ and abs(dx_["x"] + dx_["fe"].diff[1]) < AXIS_CLEAR:   # small latch next to the axis: no room for the inner dummy
+        nl = Row([(f["name"], f["dv"], f["g"], f["side"], f["left"], f["right"]) for f in nl.f if f["name"] != "Mdx1"],
+                 align="top")
+        nl.anchor(f"Mn1.{kn - 1}", "R", x_xp)
+    # matched devices close together: where the pair is wider than the latch, the latch halves move in to the axis
+    # clearance instead of sitting over the pair's outer drains (the xp / xn link then runs on the met2 band
+    # tracks and a met3 jumper, identical on both sides)
+    end = nl.f[-1]
+    gap = -AXIS_CLEAR - (end["x"] + end["fe"].diff[1])
+    if compact and gap > 1e-6:
+        nl.shift(gap)
+    x_lat = nl.by[f"Mn1.{kn - 1}"]["x"] + nl.by[f"Mn1.{kn - 1}"]["fe"].sd     # Mn1's inner xp bar
     # PMOS (left): output-inverter PMOS outside; latch Mp1 (odd fingers vdd outn ... outn) + reset Mr1 (outn)
     # + reset Mr3 (xp).  The inverter PMOS is folded to the latch finger width when it is a multiple of it
     # (shares a vdd bar with Mp1, keeps the row one finger tall), else into fingers no wider than WF_MAX / 2
@@ -272,10 +291,13 @@ def strongarm_rows(c):
             ("qp", "vdd")[(k - i) % 2]) for i in range(k)]
     mp = [(f"Mp1.{i}", dev("Mp1", "p", wp, L), "outp", "bot", ("vdd", "outn")[i % 2], ("outn", "vdd")[i % 2])
           for i in range(kp)]
-    pl = Row(mop + mp + [
+    # latch PMOS between two dummy fingers (gate on Mp1's gate net; outer on vdd, inner on outn)
+    dp = [("Mdp1", dev("Mdp", "p", wp, L), "outp", "bot", "vdd", "vdd")] if end_dummies else []
+    dq = [("Mdq1", dev("Mdq", "p", wp, L), "outp", "bot", "outn", "outn")] if end_dummies else []
+    pl = Row(mop + dp + mp + dq + [
               ("Mr1", dev("Mr1", "p", c["w_rst"], L), "clk", "top", "outn", "vdd"),
               ("Mr3", dev("Mr3", "p", c["w_rst"], L), "clk", "top", "vdd", "xp")], align="bot")
-    pl.anchor("Mr3", "R", x_xp)
+    pl.anchor("Mr3", "R", x_lat)                                   # the reset of xp over the latch's xp bar
     # output inverter as a column: Mon1's qp bar under Mop1's qp bar (qp is one met1 drop, no track).  The
     # inverter NMOS moves out to its PMOS; if the PMOS is the inner one (it is free when it shares no bar
     # with Mp1), the PMOS moves out instead
@@ -290,8 +312,23 @@ def strongarm_rows(c):
         for f in pl.f:
             if f["name"].startswith("Mop1"):
                 f["x"] += dx
-    dummies = [("Md1", "tail", "tail", "tail", wi, Lin), ("Md2", "tail", "tail", "tail", wi, Lin),
-               ("Mdl1", "outn", "outp", "outn", wn, L), ("Mdl2", "outp", "outn", "outp", wn, L)]
+    if compact and gap > 1e-6:
+        # the output inverter stays outboard of the pair and the tail: its vss drop runs down the side
+        x_rows = min(f["x"] + f["fe"].diff[0] for row in (inp, tail) for f in row.f) - 0.6
+        dx = min(0.0, x_rows - (mon["x"] + mon["fe"].sd))
+        mop_f = [f for f in pl.f if f["name"].startswith("Mop1")]
+        nxt = pl.f[len(mop_f)]
+        if dx < 0 and (nxt["shared"] or any(f["name"] in pl.split for f in mop_f[1:] + [nxt])):
+            return strongarm_rows(c, end_dummies, compact=False)     # inverter PMOS folded into the latch row
+        for f in mop_f + [mon]:
+            f["x"] += dx
+    dummies = [("Md1", "tail", "tail", "tail", wi, Lin, "n"), ("Md2", "tail", "tail", "tail", wi, Lin, "n"),
+               ("Mdl1", "outn", "outp", "outn", wn, L, "n"), ("Mdl2", "outp", "outn", "outp", wn, L, "n"),
+               *([("Mdx1", "xp", "outp", "xp", wn, L, "n"), ("Mdx2", "xn", "outn", "xn", wn, L, "n")]
+                 if "Mdx1" in nl.by else []),
+               *([("Mdp1", "vdd", "outp", "vdd", wp, L, "p"), ("Mdp2", "vdd", "outn", "vdd", wp, L, "p"),
+                  ("Mdq1", "outn", "outp", "outn", wp, L, "p"), ("Mdq2", "outp", "outn", "outp", wp, L, "p")]
+                 if end_dummies else [])]
     return dict(tail=tail, inp=inp, nl=nl, nr=nl.mirrored(sw), pl=pl, pr=pl.mirrored(sw), sw=sw, dummies=dummies,
                 fingers=dict(inp=m, tail=2 * kt, latch_n=kn, latch_p=kp, inv_p=k))
 
@@ -451,17 +488,22 @@ def build_strongarm(c, name="strongarm"):
                 for x, n, f in bs:
                     v1(x, yb)
                 hline(yb, min(b[0] for b in bs), max(b[0] for b in bs), MET2, TRK)
-        aligned = any(abs(b[0] - min(nrow.bars(net), key=lambda q: abs(q[0]))[0]) < 1e-6 for b in inp.bars(net))
+        # bars touched by a real finger (a dummy's outer bar only rides the track; in the mirrored row a shared
+        # bar is listed under the dummy's name, so test positions)
+        edges = [f["x"] + k * f["fe"].sd for f in nrow.f if not f["name"].startswith("Md") for k in (-1, 1)]
+        real = [b for b in nrow.bars(net) if min(abs(b[0] - e) for e in edges) < 1e-6]
+        aligned = any(abs(b[0] - min(real, key=lambda q: abs(q[0]))[0]) < 1e-6 for b in inp.bars(net))
         if len(tr) == 2 and not aligned:                  # pair track -> latch track on met3
             ib_ = [b[0] for b in inp.bars(net)]
-            xl = min((x for x, n, f in nrow.bars(net) if abs(abs(x) - xr) >= 0.7), key=abs)
+            xl = min((x for x, n, f in real if abs(abs(x) - xr) >= 0.7), key=abs)
             hline(tr["i"], min(ib_ + [xl]), max(ib_ + [xl]), MET2, TRK)    # (pair track reaches the link)
             for yv in tr.values():
                 box(xl, yv, M2_PAD, VIA + 0.08, MET2)
                 box(xl, yv, VIA, VIA, VIA2)
                 box(xl, yv, M3_PAD, M3_PAD, MET3)
             vline(xl, min(tr.values()) - M3_PAD / 2, max(tr.values()) + M3_PAD / 2, MET3, M3_PAD)
-        xn_, _, fn_ = min(nrow.bars(net), key=lambda b: abs(b[0]))      # the latch drain above the pair's
+        xn_, _, fn_ = min(real, key=lambda b: abs(b[0]))               # the latch drain above the pair's
+        x_xn_col = xn_
         xp_, _, fp_ = prow.bars(net)[0]
         for x, n, f in inp.bars(net):
             if abs(x - xn_) < 1e-6:
@@ -512,7 +554,7 @@ def build_strongarm(c, name="strongarm"):
     # right track balances the two output capacitances (tuned on the extracted layout)
     trim = TRIM_L0 + TRIM_DL * (R["fingers"]["latch_n"] - 1)
     if trim > 0:                                      # (start clear of the xn met1 column)
-        xs0 = max(XJ + M2_PAD + R_M2_SP, nr.bars("xn")[0][0] + 0.6)
+        xs0 = max(XJ + M2_PAD + R_M2_SP, x_xn_col + 0.6)
         v2(xs0, y_hi)
         hline(y_hi, xs0 - M3_PAD / 2, xs0 + trim, MET3, M3_PAD)
     assert XJ - M2_PAD / 2 - TRK / 2 >= R_M2_SP

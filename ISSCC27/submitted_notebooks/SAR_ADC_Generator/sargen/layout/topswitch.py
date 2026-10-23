@@ -22,33 +22,59 @@ from .cell import MET1, NWELL, VIA1, V1, Dev
 from .strongarm import (RAIL_W, R_DIFF_TAP, TAP_H, M1_STUB, TRK, TRK_IN, WF_MAX, Row, _clusters, _fe_extra,
                         _row_draw, _tap_strip)
 from .unitcell import LI, MC, MCON, NSDM, PSDM, R_M1_SP, R_M2_SP, V1_M1, V1_M2, _pin, _poly
+from ..pdk import W_MIN
 
 VIA3, M3_TOP = (70, 44), 0.50          # via3; met3 landing (met3.6 area 0.24 um^2)
 EXIT = 0.8                              # vcm / phit / phitb leave the cell on met2 this far past its edge
 
 
-def _fingers(name, kind, w, l, flavor, gate, side):
-    """Fingers of one device, the top node on inner shared bars: vcm top vcm top ... (odd count: vcm ends)."""
-    k = max(1, math.ceil(w / WF_MAX - 1e-9))
+def finger_count(wn, wp):
+    """One finger count for both rows (the PMOS fingers are wider by wp / wn), so the two rows are equally long and
+    the guard ring closes tightly around both; even where the finger width allows, so both row ends are vcm."""
+    k = max(1, math.ceil(wn / WF_MAX - 1e-9), math.ceil(wp / (WF_MAX * max(1.0, wp / wn)) - 1e-9))
+    if k % 2 and min(wn, wp) / (k + 1) >= W_MIN:
+        k += 1
+    return k
+
+
+def _fingers(name, kind, w, l, flavor, gate, side, k, dummies=True):
+    """Fingers of one device, the top node on inner shared bars: vcm top vcm ... , and a dummy finger at each end
+    (gate on the row's gate net, both diffusions on vcm): every active finger sees a neighbouring gate on both
+    sides, and the end fingers' diffusion runs one pitch further (length-of-diffusion stress, sargen.layout.lod).
+    A dummy shares the end bar where that bar is vcm; next to a top bar (odd count) it stands alone, so the floating
+    top plate gains no junction."""
     dv = Dev(name, kind, w / k, l, "", "", "", fingers=1, tie=False, flavor=flavor)
     nodes = ["vcm" if i % 2 == 0 else "top" for i in range(k + 1)]
-    return Row([(f"{name}.{i}", dv, gate, side, nodes[i], nodes[i + 1]) for i in range(k)],
-               align="bot" if side == "bot" else "top")
+    dmy = lambda i: (f"{name}d.{i}", dv, gate, side, "vcm", "vcm")
+    act = [(f"{name}.{i}", dv, gate, side, nodes[i], nodes[i + 1]) for i in range(k)]
+    return Row([dmy(0)] + act + [dmy(1)] if dummies else act, align="bot" if side == "bot" else "top")
+
+
+def top_switch_rows(design, matched=True):
+    """(NMOS row, PMOS row) of the top-plate switch, centred on x = 0.  matched=False: the earlier layout (each row
+    in fingers no wider than WF_MAX, no dummies), kept for the matching study."""
+    from ..pdk import NFET_LVT, PFET_LVT, TG_FLAVORS
+    sw = design["sw"]
+    nm, ln, pm, lp = TG_FLAVORS[sw.get("top_flavor", sw.get("flavor", "std"))]
+    # threshold per device: a flavour may mix an LVT NMOS with a standard-Vt PMOS
+    k = finger_count(sw["top_wn"], sw["top_wp"])
+    kn, kp = (k, k) if matched else (max(1, math.ceil(sw[w] / WF_MAX - 1e-9)) for w in ("top_wn", "top_wp"))
+    nrow = _fingers("Mttn", "n", sw["top_wn"], ln, "lvt" if nm == NFET_LVT else "std", "phit", "bot", kn, matched)
+    prow = _fingers("Mttp", "p", sw["top_wp"], lp, "lvt" if pm == PFET_LVT else "std", "phitb", "top", kp, matched)
+    nrow.center()
+    prow.center()
+    return nrow, prow
 
 
 def build_top_switch(design, name="topsw"):
     """Returns (Component, info, reference netlist).  Ports: top vcm phit phitb vdd vss."""
     from gdsfactory import Component
     from ..netlist import tg_lines
-    from ..pdk import NFET_LVT, PFET_LVT, TG_FLAVORS
+    from ..pdk import mos
+    from .cell import model_name
     sw = design["sw"]
     fl = sw.get("top_flavor", sw.get("flavor", "std"))
-    nm, ln, pm, lp = TG_FLAVORS[fl]
-    # threshold per device: a flavour may mix an LVT NMOS with a standard-Vt PMOS
-    nrow = _fingers("Mttn", "n", sw["top_wn"], ln, "lvt" if nm == NFET_LVT else "std", "phit", "bot")
-    prow = _fingers("Mttp", "p", sw["top_wp"], lp, "lvt" if pm == PFET_LVT else "std", "phitb", "top")
-    nrow.center()
-    prow.center()
+    nrow, prow = top_switch_rows(design)
     for row in (nrow, prow):
         for f in row.f:
             _fe_extra(f["fe"])
@@ -154,8 +180,11 @@ def build_top_switch(design, name="topsw"):
     bb = top.bbox
     lines = tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], fl)
     lines = [ln.replace(" 0 ", " vss ", 1) if ln.startswith("XMttn") or ln.startswith("MMttn") else ln for ln in lines]
+    for row, g, b in ((nrow, "phit", "vss"), (prow, "phitb", "vdd")):   # end dummies: both diffusions on vcm
+        f = row.f[0]["dv"]
+        lines.append(mos(f"{f.name}d", "vcm", g, "vcm", b, model_name(f), f.w, f.l, 2))
     pins = ["top", "vcm", "phit", "phitb", "vdd", "vss"]
     ref = "\n".join([f".subckt {name} {' '.join(pins)}"] + lines + [f".ends {name}"]) + "\n"
     info = dict(width=float(bb[1][0] - bb[0][0]), height=float(bb[1][1] - bb[0][1]), flavor=fl,
-                fingers=dict(n=len(nrow.f), p=len(prow.f)))
+                fingers=dict(n=len(nrow.f) - 2, p=len(prow.f) - 2, dummies=4))
     return top, info, ref

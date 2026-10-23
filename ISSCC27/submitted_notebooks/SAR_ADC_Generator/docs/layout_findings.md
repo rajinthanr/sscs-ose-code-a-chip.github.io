@@ -343,6 +343,35 @@ the same topology at every resolution, so the 8-bit comparator needs no separate
   samples (`studies/sine_backoff.py`, `results/8bit/layout/sine_backoff.md`). Open: balance the switch's charge
   injection (N / P split or a half-size dummy) or calibrate the offset digitally.
 
+## 6g. Matching rework: dummies, matched devices close together, diffusion-length stress (2026-10-23)
+
+Review question: matched transistors should sit close together - why does the 8-bit StrongARM have empty space in
+the middle, and the 8-bit top-plate switch empty space inside its ring?
+
+- **StrongARM.** Each latch half was anchored with its inner drain over the input pair's outermost drain (one
+  straight li link for xp / xn). At 8 bit the 14-finger pair is 17 um wide, so the latch halves sat at the cell edges:
+  centroid distances Mn1 / Mn2 19.3 um and Mp1 / Mp2 23.1 um, with the middle empty. Now the halves sit at a fixed
+  clearance from the axis (1.2 um) and xp / xn reach the pair over the met2 band tracks and a met3 jumper, mirrored:
+  7.5 / 11.3 um, cell 32.6 -> 24.6 um wide. The output inverters stay outboard (their vss drop must not cross the pair
+  and the tail). Every latch device sits between dummy fingers (gate on the device's gate net, both diffusions on one
+  node); at 4 / 6 bit the inner NMOS dummy does not fit next to the axis and is left out.
+- **Top-plate switch.** The PMOS (2x the NMOS width) had twice the fingers of the NMOS at the same finger width, and the
+  ring enclosed both rows. Now both rows have the same finger count (PMOS fingers 2x wider) and a dummy at each end:
+  8 bit 32.2 x 8.4 -> 19.2 x 10.3 um.
+- **Diffusion-length stress (LOD).** SKY130's BSIM4 models carry it (sa / sb); a 2 um NMOS at sa = sb = 0.26 um has
+  ~20 % less current than at sa = sb = 0 (stress off, every netlist and extraction so far). `sargen/layout/lod.py`
+  computes sa / sb per finger from the placement; `sargen.netlist.lod_lines` writes the drawn fingers.
+- **Numerical note.** At ngspice's default tolerances a many-finger comparator netlist resolves with ~1 mV of numerical
+  bias (+10 uV at reltol 1e-5); the whole ADC runs at reltol 1e-4 (the default-tolerance schematic offset differs by
+  0.06 LSB).
+
+Results (`studies/lod_matching.py`, `comparator_layout_ab.py`, `lod_system.py`): matched pairs identical on both sides
+before and after; latch fingers' shortest diffusion 0.29 -> 0.73 um; extracted-comparator systematic offset
+1.3 / 1.5 / 0.4 mV -> 0.2 / 0.3 / 0.7 mV at 4 / 6 / 8 bit (8 bit: a residual of the new xp / xn link routing that the
+output trim stub cannot reach - 0.09 LSB); delay +16 - 22 % (dummy gate capacitance); Monte Carlo sigma unchanged; the
+8-bit ADC offset (-1.67 LSB) is the same with and without the stress and the dummies - it is the top-plate switch's
+charge injection. All cores DRC 0, LVS match, antenna 0 after the rebuild.
+
 ## 7. References
 
 - B. Razavi, "The StrongARM Latch," IEEE SSC Magazine, 2015;

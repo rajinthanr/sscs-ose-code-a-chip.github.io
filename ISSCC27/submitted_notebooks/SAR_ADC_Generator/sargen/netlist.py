@@ -14,7 +14,7 @@ bo_<i>       analog copy of output bit i, for read-out
 
 from dataclasses import dataclass
 
-from .pdk import L_MIN, MIM, NFET, NFET_LVT, PFET, STDCELL_SPICE, TG_FLAVORS, lib_line, mim, mos
+from .pdk import L_MIN, MIM, NFET, NFET_LVT, PFET, PFET_LVT, STDCELL_SPICE, TG_FLAVORS, lib_line, mim, mos
 
 TR = 50e-12  # edge time of ideal timing sources
 
@@ -53,6 +53,49 @@ def top_switch_lines(sw, fl):
     if flavor == "nlvt":
         return [mos("Mttn", "top", "phit", "vcm", "0", NFET_LVT, sw["top_wn"], L_MIN)]
     return tg_lines("Mtt", "top", "vcm", "phit", "phitb", sw["top_wn"], sw["top_wp"], flavor)
+
+
+# ---------------------------------------------------------------- layout-aware (LOD) netlists
+def lod_lines(fingers, bulk=None, with_lod=True) -> list[str]:
+    """Device cards of drawn fingers (sargen.layout.lod): one card per group of identical fingers, with each
+    finger's sa / sb (with_lod=False writes the same fingers with sa = sb = 0, the model's no-stress default)."""
+    from .pdk import DIFF_EXT
+    bulk = bulk or {"n": "vss", "p": "vdd"}
+    model = {("n", "std"): NFET, ("n", "lvt"): NFET_LVT, ("p", "std"): PFET, ("p", "lvt"): PFET_LVT}
+    groups = {}
+    for f in fingers:
+        sa, sb = (f["sa"], f["sb"]) if with_lod else (0, 0)
+        key = (f["dev"], f["kind"], f["flavor"], f["w"], f["l"], f["d"], f["g"], f["s"], sa, sb,
+               f.get("shared_d", False), f.get("shared_s", False))
+        groups[key] = groups.get(key, 0) + 1
+    out, idx = [], {}
+    for (dev, kind, fl, w, l, d, g, s_, sa, sb, shd, shs), m in groups.items():
+        k = idx[dev] = idx.get(dev, -1) + 1
+        # a contact bar shared with the neighbouring finger carries half its junction on each finger
+        ad, pd = (0.5 if shd else 1) * w * DIFF_EXT, (0.5 if shd else 1) * 2 * (w + DIFF_EXT)
+        as_, ps = (0.5 if shs else 1) * w * DIFF_EXT, (0.5 if shs else 1) * 2 * (w + DIFF_EXT)
+        out.append(f"X{dev}_{k} {d} {g} {s_} {bulk[kind]} {model[kind, fl]} L={l:.3g} W={w:.4g} nf=1 "
+                   f"ad={ad:.4g} as={as_:.4g} pd={pd:.4g} ps={ps:.4g} nrd={DIFF_EXT / w:.4g} nrs={DIFF_EXT / w:.4g} "
+                   f"sa={sa:.4g} sb={sb:.4g} sd=0 mult={m} m={m}")
+    return out
+
+
+def strongarm_lod_subckt(fingers, with_lod=True) -> str:
+    """The comparator as drawn: every finger and dummy of the layout, with its LOD."""
+    return "\n".join([".subckt strongarm inp inn clk qp qn vdd vss"] + lod_lines(fingers, with_lod=with_lod)
+                     + [".ends strongarm"])
+
+
+def _unit_lod(line, unit):
+    """sa / sb of the CDAC unit-cell devices (identical in every cell) into a schematic card."""
+    name = line.split()[0]
+    for prefix, dev in (("XMddn", "Mdn"), ("XMdp", "Mdp"), ("XMdn", "Mdn")):
+        if name.startswith(prefix):
+            break
+    else:
+        dev = "Msn" if name.endswith("n") else "Msp"
+    sa, sb = unit[dev]
+    return line.replace(" sa=0 sb=0 ", f" sa={sa:.4g} sb={sb:.4g} ")
 
 
 def tg_lines(name, a, b, en, enb, wn, wp, flavor="std", m=1) -> list[str]:
@@ -113,7 +156,7 @@ def subckt_pins(path, name):
 
 
 def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac_lines=None,
-             sw_extracted=False, cdacsw_pins=None) -> str:
+             sw_extracted=False, cdacsw_pins=None, lod=None) -> str:
     """CDAC + switches + comparator (transistor level).
 
     cap_values: optional list of 2^N ideal capacitances (bit-major, dummy last) replacing the MIM
@@ -137,7 +180,8 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
                 "Xsw " + " ".join("0" if p == "vss" else p for p in switch_pins(bits)) + " switches"]
     else:
         out.append("* ---- top-plate sampling switch (to vcm)")
-        out += top_switch_lines(sw, fl)
+        out += lod_lines(lod["topsw"], {"n": "0", "p": "vdd"}) if lod else top_switch_lines(sw, fl)
+    n_head = len(out)
     for i in range(bits):
         m = 2**i
         out.append(f"* ---- bit {i}: {m} unit cap(s), binary-scaled switches")
@@ -160,6 +204,8 @@ def sar_core(design: dict, bits: int, cp_top: float = 0.0, cap_values=None, cdac
     if not sw_extracted:
         out += tg_lines("Msd", "botd", "vin", "phig", "phigb", sw["in_wn"], sw["in_wp"], fl)
         out.append(mos("Mddn", "botd", "phigb", "0", "0", NFET, drv["wn"], L))
+    if lod:
+        out[n_head:] = [_unit_lod(ln, lod["unit"]) if ln.startswith("XM") else ln for ln in out[n_head:]]
     if cp_top > 0:
         out.append(f"Cptop top 0 {cp_top:.4g}")
     return "\n".join(out)
@@ -281,13 +327,16 @@ class Timing:
 
 def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=False,
                   cp_top=0.0, save=None, power=True, logic="cells", cap_values=None, cdac_lines=None,
-                  cmp_subckt=None, sw_subckt=None, cdacsw=None, core=None, ext=None) -> str:
+                  cmp_subckt=None, sw_subckt=None, cdacsw=None, core=None, ext=None, lod=None, options="") -> str:
     """Full transient testbench with `n_conv` conversions (+1 leading dummy conversion).
 
     core = (netlist text, port list, subckt name): an extracted SAR core (CDAC, comparator, top-plate
     switch and SAR logic, from layout) replaces the schematic core and logic.
     ext = {"vref" | "vcm" | "vin": (R, C)}: a source reaches its node through R, with C from the node to
-    ground (an on-chip decap, or a pad path); sources not named stay ideal."""
+    ground (an on-chip decap, or a pad path); sources not named stay ideal.
+    lod = sargen.layout.lod data: comparator, top-plate switch and unit-cell switches as drawn, with each
+    finger's length of diffusion (the stress effect the models carry and the extraction does not write).
+    options: extra simulator options (e.g. tighter tolerances)."""
     ext = ext or {}
     def src(name, line):
         if name not in ext:
@@ -310,7 +359,8 @@ def sar_testbench(spec, design: dict, vin_line: str, n_conv: int, *, mismatch=Fa
 {f".include {STDCELL_SPICE}" if logic == "cells" and not core else ""}
 .temp {spec.temp}
 .option method=gear
-{core[0] if core else (cmp_subckt or strongarm_subckt(design['cmp']))}
+{options}
+{core[0] if core else (cmp_subckt or (strongarm_lod_subckt(lod["strongarm"]) if lod else strongarm_subckt(design['cmp'])))}
 {sw_subckt or ''}
 {cdacsw[0] if cdacsw else ''}
 Vdd vdd 0 {spec.vdd}
@@ -319,7 +369,8 @@ Vdd vdd 0 {spec.vdd}
 {src("vin", vin_line)}
 {tim.sources(spec.vdd)}
 {_core_instance(core) if core else sar_core(design, spec.bits, cp_top, cap_values, cdac_lines,
-                                          sw_extracted=bool(sw_subckt), cdacsw_pins=cdacsw[1] if cdacsw else None)}
+                                          sw_extracted=bool(sw_subckt), cdacsw_pins=cdacsw[1] if cdacsw else None,
+                                          lod=lod)}
 {"" if core else (sar_logic_cells(spec.bits) if logic == "cells" else sar_logic(spec.bits, spec.vdd))}
 .save {' '.join(save)} i(vdd) i(vref) i(vcm)
 .tran {spec.tclk / 100:.4g} {tstop:.6g} 0 {spec.tclk / 25:.4g}

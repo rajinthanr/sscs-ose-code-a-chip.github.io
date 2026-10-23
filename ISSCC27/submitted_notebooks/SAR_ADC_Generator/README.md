@@ -81,6 +81,8 @@ noise is not simulated; extraction is capacitance only (no wiring resistance).
       post-layout simulation (4 bit: ENOB 3.97, DNL 0.03 LSB)
 - [x] top-plate switch sizing that holds at hot and cold corners (leakage-aware rule, `studies/top_switch_trials.py`)
 - [x] antenna check of the routed cores, antenna diodes on the CDAC control trunks
+- [x] matching rework: dummies at both ends of every latch device and the top-plate switch, latch halves next to the
+      axis, diffusion-length stress from the layout into the netlist (`sargen/layout/lod.py`, `studies/lod_*.py`)
 - [ ] charge-balanced top-plate switch (the 8-bit core has a ~2-LSB offset; ENOB 7.88 at -0.5 dBFS, 7.64 at full scale)
 - [ ] TinyTapeout tile integration (pins, analog ground, Vref decoupling)
 - [x] 4..8-bit scaling (ENOB / power / capacitance / FoM trends)
