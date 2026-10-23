@@ -129,7 +129,7 @@ comparator, topsw, sarlogic, then core; `python collect_layout.py N`; `python ru
 ## 6. Open items
 
 - **Leakage on the floating top plate.** Resolved 2026-10-23 by a leakage-aware switch rule (section 6f); a
-  bootstrapped switch would recover the remaining hot-corner ENOB at 8 bit (7.51 vs 7.98 nominal).
+  bootstrapped switch would recover the remaining hot-corner ENOB at 8 bit (7.51 vs 7.68 at tt, same full-scale test).
 - **8-bit offset from the top-plate switch.** The extracted 8-bit core with the leakage-aware switch has a ~2-LSB
   offset that clips the full-scale test sine (section 6f): balance the switch's charge injection.
 - **Re-runs with the current switch:** post-layout PVT of the 4-bit core and the 6-bit pre/post-layout comparison
@@ -337,7 +337,7 @@ the same topology at every resolution, so the 8-bit comparator needs no separate
   `results/<N>bit/sweeps/top_switch_verify.md`.
 
   Post-layout with the new switch: 4 bit unchanged (extracted core ENOB 3.97, DNL / INL 0.03 LSB). At 8 bit the
-  extracted core reads ENOB 7.64 on the standard 0.99-full-scale sine (7.98 with the old switch). Cause: the wider
+  extracted core reads ENOB 7.64 on the standard 0.99-full-scale sine (schematic 7.68; 7.98 with the old switch). Cause: the wider
   switch injects more charge when it opens, the codes sit ~2 LSB above mid-scale, and the sine's peaks clip on the
   last code (7 of 128 samples at 255). At -0.5 dBFS the same core gives ENOB 7.88 and SFDR 60.4 dB with no clipped
   samples (`studies/sine_backoff.py`, `results/8bit/layout/sine_backoff.md`). Open: balance the switch's charge
