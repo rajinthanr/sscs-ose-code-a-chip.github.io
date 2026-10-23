@@ -56,27 +56,32 @@ def main():
     (R / "scaling.md").write_text("\n".join(md) + "\n")
 
     n = [r["bits"] for r in rows]
-    fig, ax = plt.subplots(2, 2, figsize=(10, 7))
-    ax[0, 0].plot(n, [r["enob"] for r in rows], "o-", label="SPICE")
-    ax[0, 0].plot(n, [r["ideal_enob"] for r in rows], "k--", label="ideal quantizer")
+    from sargen.plots import BLUE, GREEN, INK, MUTED, ORANGE, _fig, _save, _style
+    fig, ax = _fig(10.5, 7.6, "One generator, 4 to 8 bits",
+                   "The same code sized and simulated each resolution at transistor level (before layout). ENOB follows "
+                   "N; capacitance and power grow about 2x per bit once capacitor matching sets the unit capacitor.",
+                   nrows=2, ncols=2)
+    _style(ax)
+    ax[0, 0].plot(n, [r["ideal_enob"] for r in rows], "--", color=MUTED, label="ideal quantizer")
+    ax[0, 0].plot(n, [r["enob"] for r in rows], "o-", color=BLUE, lw=2, label="transistor level")
     ax[0, 0].set_ylabel("ENOB [bit]")
-    ax[0, 0].legend()
-    ax[0, 1].semilogy(n, [r["ctot_ff"] for r in rows], "o-", label="C_total [fF]")
-    ax[0, 1].semilogy(n, [r["p_uw"] for r in rows], "s-", label="power [uW]")
-    ax[0, 1].legend()
-    ax[1, 0].plot(n, [r["dnl"] for r in rows], "o-", label="max |DNL| (nominal)")
-    ax[1, 0].plot(n, [r["inl"] for r in rows], "s-", label="max |INL| (nominal)")
-    ax[1, 0].plot(n, [r["mc_dnl_p99"] for r in rows], "^--", label="DNL 99th pct (mismatch MC)")
-    ax[1, 0].set_ylabel("LSB")
-    ax[1, 0].legend(fontsize=8)
-    ax[1, 1].plot(n, [r["fom_fj"] for r in rows], "o-")
+    ax[0, 0].legend(loc="upper left")
+    ax[0, 1].semilogy(n, [r["ctot_ff"] for r in rows], "o-", color=BLUE, lw=2, label="array capacitance [fF]")
+    ax[0, 1].semilogy(n, [r["p_uw"] for r in rows], "s-", color=ORANGE, lw=2, label="power [µW]")
+    ax[0, 1].legend(loc="upper left")
+    ax[1, 0].plot(n, [r["dnl"] for r in rows], "o-", color=BLUE, lw=2, label="max |DNL|, nominal")
+    ax[1, 0].plot(n, [r["inl"] for r in rows], "s-", color=GREEN, lw=2, label="max |INL|, nominal")
+    ax[1, 0].plot(n, [r["mc_dnl_p99"] for r in rows], "^--", color=ORANGE, lw=1.5, label="DNL, 99 % of chips (MC)")
+    ax[1, 0].axhline(0.5, color=MUTED, ls=":", lw=1)
+    ax[1, 0].text(n[0], 0.51, "target 0.5 LSB", fontsize=9, color=MUTED, va="bottom")
+    ax[1, 0].set_ylabel("[LSB]")
+    ax[1, 0].legend(loc="center left")
+    ax[1, 1].plot(n, [r["fom_fj"] for r in rows], "o-", color=BLUE, lw=2)
     ax[1, 1].set_ylabel("Walden FoM [fJ/conv-step]")
     for a in ax.flat:
         a.set_xlabel("resolution N [bit]")
-        a.grid(alpha=0.3, which="both")
-    fig.suptitle("SARGen: one generator, resolution 4 to 8 bit (SKY130, transistor level, pre-layout)")
-    fig.tight_layout()
-    fig.savefig(R / "scaling.png", dpi=130)
+        a.set_xticks(n)
+    _save(fig, R / "scaling.png")
     print((R / "scaling.md").read_text())
 
 
