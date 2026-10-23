@@ -3,4 +3,4 @@
 | case | ENOB full scale | ENOB at -0.5 dBFS | SFDR at -0.5 dBFS [dB] | samples at the end codes | mean code - mid-scale |
 |---|---|---|---|---|---|
 | schematic | 7.68 | 7.85 | 59.5 | 0 | +1.99 |
-| full core from layout | 7.64 | 7.88 | 60.4 | 0 | +1.91 |
+| full core from layout | 7.71 | 7.88 | 57.4 | 0 | +1.75 |
