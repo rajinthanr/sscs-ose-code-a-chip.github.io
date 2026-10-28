@@ -4,6 +4,7 @@ galleries.  Kept here so the notebook's cells show results and the figure code t
 import base64
 import json
 import math
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -19,6 +20,14 @@ BLUE, ORANGE, GREY = "#2a78d6", "#eb6834", "#b9bdc5"
 CAT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
 BLUES = LinearSegmentedColormap.from_list("blues", ["#e8f1fb", "#9cc3ee", "#2a78d6", "#123f78"])
 RAMP = LinearSegmentedColormap.from_list("ramp", ["#9cc3ee", "#2a78d6", "#123f78"])
+
+_UNIT = re.compile(r"(?<=[\d\s\[(/%~-])u(m\^2|m|V|W|A)\b")
+
+
+def units(text):
+    """Plain-ASCII units of the result files as typeset: um -> \u00b5m, um^2 -> \u00b5m\u00b2, uV / uW / uA likewise."""
+    return _UNIT.sub(lambda m: "\u00b5" + m.group(1).replace("^2", "\u00b2"), str(text))
+
 
 # ---------------------------------------------------------------- numbering (stable when a cell is re-run)
 _num = {"fig": {}, "tab": {}}
@@ -75,11 +84,11 @@ def figure(path, caption, width=None):
         print(f"({p} not generated yet)")
         return
     display(Image(filename=str(p), width=width) if width else Image(filename=str(p)))
-    display(Markdown(f"**Fig. {_n('fig', caption)}.** {caption}"))
+    display(Markdown(f"**Fig. {_n('fig', caption)}.** {units(caption)}"))
 
 
 def insight(text):
-    display(Markdown(f"**Key insight:** {text}"))
+    display(Markdown(f"**Key insight:** {units(text)}"))
 
 
 def animation(path, caption, width=760):
@@ -88,7 +97,7 @@ def animation(path, caption, width=760):
     if p.exists():
         b64 = base64.b64encode(p.read_bytes()).decode()
         display(HTML(f'<img src="data:image/gif;base64,{b64}" width="{width}" alt="SAR conversion animation">'))
-        display(Markdown(f"**Fig. {_n('fig', caption)}.** {caption}"))
+        display(Markdown(f"**Fig. {_n('fig', caption)}.** {units(caption)}"))
 
 
 # ---------------------------------------------------------------- tables
@@ -170,7 +179,7 @@ def _one_table(head, rows, notes, caption, cols, fold, fmt):
     keep = [i for i, h in enumerate(head) if h not in DROP]
     if cols:
         keep = [i for c in cols for i, h in enumerate(head) if h == c or HEAD.get(h) == c]
-    out_head = [HEAD.get(head[i], head[i]) for i in keep]
+    out_head = [units(HEAD.get(head[i], head[i])) for i in keep]
     body = []
     for r in rows:
         r = r + [""] * (len(head) - len(r))
@@ -179,7 +188,9 @@ def _one_table(head, rows, notes, caption, cols, fold, fmt):
                 r[fs_col] = f"{float(r[fs_col]) / 1e6:g}"
             except ValueError:
                 pass
-        body.append([_num_fmt(r[i]) if fmt else r[i] for i in keep])
+        body.append([units(_num_fmt(r[i]) if fmt else r[i]) for i in keep])
+    notes = [units(n) for n in notes]
+    caption = units(caption) if caption else caption
     num = f"Table {_n('tab', caption)}." if caption else ""
     if fold is True or (fold == "auto" and len(body) > 12):
         th = "".join(f"<th>{h}</th>" for h in out_head)
@@ -202,6 +213,23 @@ def md_rows(path):
     """The rows of the first markdown table in a result file, as dicts."""
     head, rows, _ = _rows(Path(path).read_text())
     return [dict(zip(head, r)) for r in rows]
+
+
+def spec_table(spec):
+    """The specification: the two inputs and the targets the sizing rules work to."""
+    sp = spec.to_dict()
+    table("\n".join([
+        "| specification | value | used for |", "|---|---|---|",
+        f"| resolution / sample rate | {sp['bits']} bit / {sp['fs'] / 1e6:g} MS/s | everything |",
+        f"| supply, reference, common mode | {sp['vdd']} V, {sp['vref']} V, {sp['vcm']} V | "
+        f"LSB = {sp['lsb'] * 1e3:.1f} mV |",
+        f"| SAR clock | {sp['fclk'] / 1e6:g} MHz ({sp['cycles']} cycles per conversion) | switch and comparator timing |",
+        f"| DNL target (3 sigma, capacitor mismatch) | {sp['dnl_3sigma_lsb']} LSB | unit capacitor size |",
+        f"| comparator offset target (3 sigma) | {sp['offset_3sigma_lsb']} LSB | input-pair size |",
+        f"| comparator noise target | {sp['noise_lsb']} LSB | kT/C and input pair |",
+        f"| settling target | {sp['settle_lsb']} LSB | switch and driver widths |",
+        f"| sizing condition | {sp['corner']}, {sp['temp']:g} \u00b0C | (corners are checked in section 12) |"]),
+        "The specification: two inputs (resolution, sample rate) and the targets every block is sized for.", fmt=False)
 
 
 # ---------------------------------------------------------------- summary tables (top of the notebook and section 14)

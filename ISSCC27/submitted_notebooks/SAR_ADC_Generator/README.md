@@ -73,21 +73,28 @@ noise is not simulated; extraction is capacitance only (no wiring resistance).
 
 ## Roadmap
 
-- [x] 4-bit pre-layout flow: characterization, sizing, netlist, ramp/FFT/MC metrics, animation
+- [x] 4-bit pre-layout flow: characterization, sizing, netlist, ramp/FFT/MC metrics, animation and an interactive explorer
 - [x] layout generators from SKY130 PDK PCells: CDAC unit cell with its own switches, 3-8 bit common-centroid
       CDAC arrays, compact StrongARM comparator (findings: [docs/layout_findings.md](docs/layout_findings.md))
 - [x] DRC/LVS (KLayout incl. capm.10, Magic, Netgen) and PEX, post-layout re-simulation
 - [x] top-plate switch, SAR logic (LibreLane), routed 4- and 6-bit cores, DRC 0 / LVS match; full-core
-      post-layout simulation (4 bit: ENOB 3.97, DNL 0.03 LSB)
+      post-layout simulation (4 bit: ENOB 3.96, DNL 0.07 LSB)
 - [x] top-plate switch sizing that holds at hot and cold corners (leakage-aware rule, `studies/top_switch_trials.py`)
 - [x] antenna check of the routed cores, antenna diodes on the CDAC control trunks
 - [x] matching rework: dummies at both ends of every latch device and the top-plate switch, latch halves next to the
       axis, diffusion-length stress from the layout into the netlist (`sargen/layout/lod.py`, `studies/lod_*.py`)
-- [ ] charge-balanced top-plate switch (the 8-bit core has a ~2-LSB offset; ENOB 7.88 at -0.5 dBFS, 7.64 at full scale)
+- [ ] charge-balanced top-plate switch (the 8-bit core has a 1.4-LSB offset; ENOB 7.88 at -0.5 dBFS, 7.71 at full scale)
 - [ ] TinyTapeout tile integration (pins, analog ground, Vref decoupling)
 - [x] 4..8-bit scaling (ENOB / power / capacitance / FoM trends)
 - [x] robustness: PVT, input frequency, sample rate, comparator delay, transistor-level mismatch runs
 - [x] Colab install path
+
+## Use of AI tools
+
+SARGen's code, simulation scripts and documentation were written with the help of an AI coding assistant (Claude by
+Anthropic, used through Claude Code). The author set the specification and the design rules, directed and reviewed the
+work, and checked the results; every reported number comes from the simulations, signoff runs and result files in this
+folder.
 
 ## License
 
