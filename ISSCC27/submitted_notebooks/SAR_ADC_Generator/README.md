@@ -1,6 +1,6 @@
 # SARGen - automated, explainable SAR ADC generator (SKY130)
 
-IEEE SSCS Code-a-Chip, ISSCC 2027 submission (work in progress).
+IEEE SSCS Code-a-Chip, ISSCC 2027 submission. The notebook is `SAR_ADC_Generator.ipynb`.
 
 **Author:** Rajinthan Rameshkumar, Dept. of Electronic and Telecommunication Engineering,
 University of Moratuwa, Sri Lanka (rajinthan519@gmail.com, [rajinthan.com](https://rajinthan.com))
@@ -8,7 +8,18 @@ University of Moratuwa, Sri Lanka (rajinthan519@gmail.com, [rajinthan.com](https
 Enter a resolution (4-8 bit) and a sample rate; the flow characterizes the SKY130 PDK, sizes the
 SAR ADC, generates a transistor-level netlist, simulates it with ngspice and reports ENOB, INL/DNL,
 histogram, FFT, comparator offset, power and Monte-Carlo yield, together with an animated explanation
-of the conversion.
+of the conversion. The same code then generates the layout from the PDK's own cells, signs it off and
+re-simulates the extraction.
+
+**Results** (extracted layout, 10 MS/s, 1.8 V, typical corner; numbers from `results/`):
+
+| resolution | core area | ENOB, schematic -> layout | max DNL / INL | power |
+|---|---|---|---|---|
+| 4 bit | 2762 µm² | 3.97 -> 3.96 | 0.07 / 0.08 LSB | 26 µW |
+| 6 bit | 5382 µm² | 5.91 -> 5.98 | 0.11 / 0.11 LSB | 65 µW |
+| 8 bit | 15854 µm² | 7.68 -> 7.71 (7.88 at -0.5 dBFS) | 0.25 / 0.22 LSB | 289 µW |
+
+Every block and core: DRC 0 (KLayout and Magic), LVS match (Netgen), antenna check; no missing codes.
 
 ## Quick start
 
@@ -69,8 +80,10 @@ end of sampling and the other plates are grounded slightly later (break-before-m
 inside the supply rails; StrongARM comparator against Vcm = Vref/2; synchronous SAR logic from standard cells.
 Input range 0..Vref.
 
-Idealizations (stated in the results): clock-phase generation, Vref and Vcm are ideal sources; comparator
-noise is not simulated; extraction is capacitance only (no wiring resistance).
+Idealizations (stated in the notebook's limitations): clock-phase generation, Vref and Vcm are ideal sources;
+comparator noise is the input pair's thermal noise injected as an equivalent source (no transient device noise in
+ngspice); post-layout runs use capacitance-only extraction, with wiring resistance checked separately (Magic
+extresist).
 
 ## Roadmap
 
@@ -78,7 +91,7 @@ noise is not simulated; extraction is capacitance only (no wiring resistance).
 - [x] layout generators from SKY130 PDK PCells: CDAC unit cell with its own switches, 3-8 bit common-centroid
       CDAC arrays, compact StrongARM comparator (findings: [docs/layout_findings.md](docs/layout_findings.md))
 - [x] DRC/LVS (KLayout incl. capm.10, Magic, Netgen) and PEX, post-layout re-simulation
-- [x] top-plate switch, SAR logic (LibreLane), routed 4- and 6-bit cores, DRC 0 / LVS match; full-core
+- [x] top-plate switch, SAR logic (LibreLane), routed 4-, 6- and 8-bit cores, DRC 0 / LVS match; full-core
       post-layout simulation (4 bit: ENOB 3.96, DNL 0.07 LSB)
 - [x] top-plate switch sizing that holds at hot and cold corners (leakage-aware rule, `studies/top_switch_trials.py`)
 - [x] antenna check of the routed cores, antenna diodes on the CDAC control trunks
