@@ -58,12 +58,12 @@ def waveforms(w, timing, spec, path):
     ax[0].axhline(spec.vcm, color=ORANGE, ls="--", lw=1.2, label="$V_{cm}$")
     ax[0].plot([], [], color="#9ca3af", lw=0.8, label="bottom plates")
     ax[0].set_ylabel("voltage [V]")
-    ax[0].legend(ncol=3, loc="upper right")
+    ax[0].legend(ncol=3, loc="lower right", bbox_to_anchor=(1, 1.0))     # above the traces
     ax[0].set_title("capacitor array (CDAC)", loc="left", fontsize=11, color=INK)
     ax[1].plot(t, w["phit"], color=MUTED, lw=1, label="sample phase")
     ax[1].plot(t, w["clk"], color=BLUE, lw=1, label="comparator clock")
     ax[1].plot(t, w["qp"], color=ORANGE, lw=1.3, label="decision (1 = keep bit)")
-    ax[1].legend(ncol=3, loc="upper right")
+    ax[1].legend(ncol=3, loc="lower right", bbox_to_anchor=(1, 1.0))
     ax[1].set_ylabel("[V]")
     ax[1].set_title("comparator", loc="left", fontsize=11, color=INK)
     for i in range(n):

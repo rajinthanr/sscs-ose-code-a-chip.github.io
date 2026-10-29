@@ -167,7 +167,7 @@ def table(src, caption=None, cols=None, fold="auto", fmt=True):
     for t, text in blocks:
         head, rows, notes = _rows(text)
         if head is None:                          # a note between tables
-            display(Markdown(text))
+            display(Markdown(units(text)))
             continue
         cap = caption if first and caption else t
         first = False
@@ -255,8 +255,9 @@ def results_table():
         fs = json.loads((R / f"{b}bit/summary.json").read_text())["spec"]["fs"]
         core = next(ln for ln in (R / f"{b}bit/layout/signoff.md").read_text().splitlines() if "core (all blocks" in ln)
         fom = x["p_uw"] * 1e-6 / (2 ** x["enob"] * fs) * 1e15
-        rows.append(f"| {b} bit | {core.split('|')[3].strip()} µm² | {s['enob']:.2f} → {x['enob']:.2f} | "
-                    f"{x['dnl_t']:.2f} / {x['inl_t']:.2f} LSB | {x['p_uw']:.0f} µW | {fom:.0f} fJ/step |")
+        nb = "\u00a0"                       # number and unit on one line
+        rows.append(f"| {b}{nb}bit | {core.split('|')[3].strip()}{nb}µm² | {s['enob']:.2f} → {x['enob']:.2f} | "
+                    f"{x['dnl_t']:.2f} / {x['inl_t']:.2f}{nb}LSB | {x['p_uw']:.0f}{nb}µW | {fom:.0f}{nb}fJ/step |")
         x8 = x if b == 8 else x8
     bo = R / "8bit/layout/sine_backoff.md"
     if bo.exists() and x8:   # the 8-bit full-scale sine clips on the core's offset (section 13)

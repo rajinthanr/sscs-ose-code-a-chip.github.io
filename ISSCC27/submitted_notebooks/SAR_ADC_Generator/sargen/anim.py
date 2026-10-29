@@ -93,7 +93,11 @@ def _draw_cdac(ax, f, model, vin):
         line([xc, xc], [7.6, 6.45])
         dot(xc, top)
         label = f"{2 ** j}C" if j < n else "1C"
-        ax.text(xc + hw + 0.08, 7.78, label, fontsize=9.5, va="center", color=INK)
+        if dx > 1.2:
+            ax.text(xc + hw + 0.08, 7.78, label, fontsize=9.5, va="center", color=INK)
+        else:                                                   # 7-8 bit: no room beside the plate, label below it
+            ax.text(xc, 7.15, label, fontsize=8.5, ha="center", va="center", color=INK,
+                    bbox=dict(fc="white", ec="none", pad=0.6), zorder=4)
         ax.text(xc, 9.15, f"b{j}" if j < n else "dummy", ha="center", fontsize=10, color=MUTED)
         # switch: three contacts (Vin, Vref, GND) reached by stubs from their rails; the arm picks one
         cx = {"vin": xc - 0.28, "vref": xc, "gnd": xc + 0.28}

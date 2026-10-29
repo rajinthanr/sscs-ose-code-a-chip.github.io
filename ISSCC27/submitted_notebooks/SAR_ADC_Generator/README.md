@@ -44,7 +44,8 @@ python run_postlayout.py --bits 4            # same testbench with the extracted
 Each block is closed at DRC 0 / LVS match before the next is built; `--bits 6` runs the same generators.
 
 **Google Colab:** the first code cell of the notebook installs ngspice (conda-forge) and the SKY130 PDK
-(`ciel`, pinned version) in about 8 minutes; tested on a clean Ubuntu 22.04 image.
+(`ciel`, pinned version) in a few minutes; *Run all* takes about 10 minutes on 2 cores (tested on a clean
+Ubuntu 22.04 image with Colab's package versions).
 
 ## Flow
 

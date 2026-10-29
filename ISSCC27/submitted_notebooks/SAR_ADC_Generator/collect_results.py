@@ -75,7 +75,7 @@ def main():
     ax[1, 0].axhline(0.5, color=MUTED, ls=":", lw=1)
     ax[1, 0].text(n[0], 0.51, "target 0.5 LSB", fontsize=9, color=MUTED, va="bottom")
     ax[1, 0].set_ylabel("[LSB]")
-    ax[1, 0].legend(loc="center left")
+    ax[1, 0].legend(loc="upper left", bbox_to_anchor=(0, 0.95))
     ax[1, 1].plot(n, [r["fom_fj"] for r in rows], "o-", color=BLUE, lw=2)
     ax[1, 1].set_ylabel("Walden FoM [fJ/conv-step]")
     for a in ax.flat:
